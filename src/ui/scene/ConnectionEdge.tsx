@@ -19,6 +19,7 @@ interface FlyingPacket {
     direction: 1 | -1; // 1: A->B, -1: B->A
     color: string;
     isRelay: boolean;
+    senderId: string;
 }
 
 /**
@@ -98,6 +99,15 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
 
     const isDimmed = (selectedId !== null && !isHighlighted && !isGraphMode) || isUnknownMuted;
 
+    // Resolve selected peer hex ID if a person is selected
+    let selectedPeerIDHex: string | undefined;
+    if (selectedId) {
+        const person = engine.getPerson(selectedId);
+        if (person) {
+            selectedPeerIDHex = person.device.peerIDHex;
+        }
+    }
+
     // Listen for packets via EventBus
     useEffect(() => {
         const handlePacket = (data: any) => {
@@ -141,7 +151,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             
             setPackets(prev => [
                 ...prev, 
-                { id: Math.random().toString(), progress: 0, direction, color, isRelay }
+                { id: Math.random().toString(), progress: 0, direction, color, isRelay, senderId: senderHex }
             ]);
         };
         
@@ -287,7 +297,9 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                  </line>
 
                  {/* Flying Packets (Even in Graph Mode) */}
-                 {packets.map(p => {
+                 {packets
+                    .filter(p => !selectedPeerIDHex || p.senderId === selectedPeerIDHex)
+                    .map(p => {
                     const posA = connection.endpointA.position!;
                     const posB = connection.endpointB.position!;
                     const t = p.direction === 1 ? p.progress : (1 - p.progress);
@@ -335,7 +347,9 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                  </line>
 
                 {/* Flying Packets */}
-                {packets.map(p => {
+                {packets
+                    .filter(p => !selectedPeerIDHex || p.senderId === selectedPeerIDHex)
+                    .map(p => {
                     const posA = connection.endpointA.position!;
                     const posB = connection.endpointB.position!;
                     const t = p.direction === 1 ? p.progress : (1 - p.progress);
