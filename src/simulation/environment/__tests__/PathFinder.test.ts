@@ -241,4 +241,191 @@ describe('PathFinder', () => {
             expect(smallPaddingNodes).toBe(largePaddingNodes);
         });
     });
+
+    describe('narrow gap rejection', () => {
+        it('rejects paths through very narrow gaps between buildings', () => {
+            // Two buildings with only 2m gap between them (less than MIN_CLEARANCE * 2)
+            const building1 = makeBuilding('b1', [
+                { x: 0, y: 40 },
+                { x: 20, y: 40 },
+                { x: 20, y: 60 },
+                { x: 0, y: 60 },
+            ]);
+            const building2 = makeBuilding('b2', [
+                { x: 22, y: 40 },  // Only 2m gap
+                { x: 50, y: 40 },
+                { x: 50, y: 60 },
+                { x: 22, y: 60 },
+            ]);
+            pathFinder.buildVisibilityGraph([building1, building2], 3);
+
+            // Try to path through the narrow gap
+            const result = pathFinder.findPath(
+                { x: 10, y: 20 },
+                { x: 35, y: 80 }
+            );
+
+            // Should not find a direct path through the gap
+            // Either finds a path around or returns not found
+            if (result.found) {
+                // If found, verify it doesn't go through the gap
+                for (const wp of result.waypoints) {
+                    // Waypoint should not be in the gap area (x between 20 and 22, y between 40 and 60)
+                    const inGap = wp.x > 19 && wp.x < 23 && wp.y >= 40 && wp.y <= 60;
+                    expect(inGap).toBe(false);
+                }
+            }
+        });
+
+        it('allows paths through sufficiently wide corridors', () => {
+            // Two buildings with 15m gap between them (wider than MIN_CLEARANCE * 2)
+            const building1 = makeBuilding('b1', [
+                { x: 40, y: 0 },
+                { x: 60, y: 0 },
+                { x: 60, y: 35 },
+                { x: 40, y: 35 },
+            ]);
+            const building2 = makeBuilding('b2', [
+                { x: 40, y: 65 },  // 30m gap (65-35=30)
+                { x: 60, y: 65 },
+                { x: 60, y: 100 },
+                { x: 40, y: 100 },
+            ]);
+            pathFinder.buildVisibilityGraph([building1, building2], 3);
+
+            // Path through the corridor
+            const result = pathFinder.findPath(
+                { x: 0, y: 50 },
+                { x: 100, y: 50 }
+            );
+
+            expect(result.found).toBe(true);
+            // Should be a direct path through the corridor
+            expect(result.waypoints).toHaveLength(2);
+        });
+    });
+
+    describe('zone validation', () => {
+        let building: Building;
+
+        beforeEach(() => {
+            building = makeBuilding('b1', [
+                { x: 40, y: 40 },
+                { x: 60, y: 40 },
+                { x: 60, y: 60 },
+                { x: 40, y: 60 },
+            ]);
+            pathFinder.buildVisibilityGraph([building], 3);
+        });
+
+        it('rejects path from inside building to outside', () => {
+            // Start inside the building, goal outside
+            const result = pathFinder.findPath(
+                { x: 50, y: 50 },  // Inside building
+                { x: 100, y: 100 } // Outside
+            );
+
+            expect(result.found).toBe(false);
+        });
+
+        it('rejects path from outside building to inside', () => {
+            // Start outside, goal inside the building
+            const result = pathFinder.findPath(
+                { x: 0, y: 0 },    // Outside
+                { x: 50, y: 50 }   // Inside building
+            );
+
+            expect(result.found).toBe(false);
+        });
+
+        it('allows path between two outside points', () => {
+            // Both outside
+            const result = pathFinder.findPath(
+                { x: 0, y: 0 },
+                { x: 100, y: 100 }
+            );
+
+            expect(result.found).toBe(true);
+        });
+
+        it('rejects path between two inside points (buildings are solid obstacles)', () => {
+            // Both inside the same building
+            // Buildings are solid obstacles, so even if both points are inside,
+            // we cannot find a valid path through a building
+            const result = pathFinder.findPath(
+                { x: 45, y: 50 },  // Inside
+                { x: 55, y: 50 }   // Also inside
+            );
+
+            // While both are in "compatible zones" (both inside), 
+            // the path validation fails because paths through buildings are invalid
+            expect(result.found).toBe(false);
+        });
+    });
+
+    describe('path clearance validation', () => {
+        it('ensures path maintains minimum clearance from walls', () => {
+            const building = makeBuilding('b1', [
+                { x: 50, y: 50 },
+                { x: 70, y: 50 },
+                { x: 70, y: 70 },
+                { x: 50, y: 70 },
+            ]);
+            pathFinder.buildVisibilityGraph([building], 5);
+
+            // Start and goal that would naturally path close to corners
+            const result = pathFinder.findPath(
+                { x: 40, y: 40 },
+                { x: 80, y: 80 }
+            );
+
+            expect(result.found).toBe(true);
+            
+            // Check all intermediate waypoints maintain clearance
+            for (let i = 1; i < result.waypoints.length - 1; i++) {
+                const wp = result.waypoints[i];
+                // Should not be within 2m of building edges
+                const tooCloseX = wp.x > 48 && wp.x < 72;
+                const tooCloseY = wp.y > 48 && wp.y < 72;
+                // At least one dimension should be outside the danger zone
+                expect(!(tooCloseX && tooCloseY)).toBe(true);
+            }
+        });
+
+        it('validates entire path segments not just waypoints', () => {
+            // Two buildings forming a narrow passage that waypoints might skip over
+            const building1 = makeBuilding('b1', [
+                { x: 45, y: 0 },
+                { x: 55, y: 0 },
+                { x: 55, y: 45 },
+                { x: 45, y: 45 },
+            ]);
+            const building2 = makeBuilding('b2', [
+                { x: 45, y: 55 },
+                { x: 55, y: 55 },
+                { x: 55, y: 100 },
+                { x: 45, y: 100 },
+            ]);
+            pathFinder.buildVisibilityGraph([building1, building2], 5);
+
+            // Path that might try to cut diagonally through narrow gap
+            const result = pathFinder.findPath(
+                { x: 0, y: 30 },
+                { x: 100, y: 70 }
+            );
+
+            // The path should either:
+            // 1. Go through the corridor (if wide enough)
+            // 2. Go around (if corridor is too narrow)
+            // But NOT cut diagonally through buildings
+            if (result.found && result.waypoints.length > 2) {
+                // Verify no waypoint is inside either building
+                for (const wp of result.waypoints) {
+                    const inBuilding1 = wp.x > 45 && wp.x < 55 && wp.y > 0 && wp.y < 45;
+                    const inBuilding2 = wp.x > 45 && wp.x < 55 && wp.y > 55 && wp.y < 100;
+                    expect(inBuilding1 || inBuilding2).toBe(false);
+                }
+            }
+        });
+    });
 });

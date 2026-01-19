@@ -10,8 +10,11 @@ import { hasLineOfSight } from './LineOfSight';
 /** Default padding distance from building walls (meters) */
 const DEFAULT_PADDING = 3;
 
-/** Minimum gap width for paths (narrower gaps are blocked) */
-const MIN_GAP_WIDTH = 4;
+/** Number of sample points to check along each path segment (reduced for speed) */
+const SAMPLE_COUNT = 3;
+
+/** Maximum distance to consider for visibility edges (optimization) */
+const MAX_VISIBILITY_DISTANCE = 150;
 
 /** Result of a pathfinding query */
 export interface PathResult {
@@ -36,7 +39,18 @@ interface GraphNode {
 }
 
 /** How many edge checks to do before yielding to UI */
-const CHUNK_SIZE = 500;
+const CHUNK_SIZE = 2000;
+
+/** localStorage key prefix for visibility graph cache */
+const GRAPH_CACHE_PREFIX = 'bitchat_visgraph_';
+
+/** Cache entry structure */
+interface GraphCacheEntry {
+    timestamp: number;
+    padding: number;
+    nodes: GraphNode[];
+    inflatedPolygons: Point2D[][];
+}
 
 /**
  * PathFinder using visibility graph and A* algorithm.
@@ -59,22 +73,34 @@ export class PathFinder {
 
     /**
      * Prepare to build the visibility graph from buildings.
-     * Actual building is deferred until first findPath() call (lazy init).
+     * Tries to load from cache first. If not cached, defers building until needed.
+     * Returns true if loaded from cache, false if needs building.
      */
-    buildVisibilityGraph(buildings: Building[], padding: number = DEFAULT_PADDING): void {
+    buildVisibilityGraph(buildings: Building[], padding: number = DEFAULT_PADDING): boolean {
+        // For empty buildings, mark as ready immediately
+        if (buildings.length === 0) {
+            this.buildings = buildings;
+            this.padding = padding;
+            this.nodes = [];
+            this.inflatedPolygons = [];
+            this.graphBuilt = true;
+            this.needsRebuild = false;
+            return true;
+        }
+        
+        // Try to load from cache first
+        if (this.tryLoadFromCache(buildings, padding)) {
+            return true;
+        }
+        
+        // Cache miss - prepare for lazy build
         this.buildings = buildings;
         this.padding = padding;
         this.nodes = [];
         this.inflatedPolygons = [];
-        
-        // For empty buildings, mark as ready immediately
-        if (buildings.length === 0) {
-            this.graphBuilt = true;
-            this.needsRebuild = false;
-        } else {
-            this.graphBuilt = false;
-            this.needsRebuild = true;  // Mark for lazy rebuild
-        }
+        this.graphBuilt = false;
+        this.needsRebuild = true;  // Mark for lazy rebuild
+        return false;
     }
 
     /**
@@ -143,6 +169,7 @@ export class PathFinder {
         await this.yieldToUI();
 
         // Build edges between visible pairs (the expensive O(n²) part)
+        // Optimized: skip pairs that are too far apart
         const totalPairs = (this.nodes.length * (this.nodes.length - 1)) / 2;
         let pairCount = 0;
         let lastProgressUpdate = 0;
@@ -151,9 +178,10 @@ export class PathFinder {
             for (let j = i + 1; j < this.nodes.length; j++) {
                 const a = this.nodes[i].point;
                 const b = this.nodes[j].point;
-
-                if (this.canSee(a, b)) {
-                    const dist = this.distance(a, b);
+                
+                // Early distance check - skip very distant pairs
+                const dist = this.distance(a, b);
+                if (dist <= MAX_VISIBILITY_DISTANCE && this.canSee(a, b)) {
                     this.nodes[i].neighbors.push(j);
                     this.nodes[i].distances.push(dist);
                     this.nodes[j].neighbors.push(i);
@@ -177,6 +205,10 @@ export class PathFinder {
 
         this.graphBuilt = true;
         this.needsRebuild = false;
+        
+        // Save to cache for next time
+        this.saveToCache();
+        
         this.onProgress?.(1, 'Ready');
     }
     
@@ -228,14 +260,14 @@ export class PathFinder {
             });
         }
 
-        // Build edges between visible pairs
+        // Build edges between visible pairs (with distance culling)
         for (let i = 0; i < this.nodes.length; i++) {
             for (let j = i + 1; j < this.nodes.length; j++) {
                 const a = this.nodes[i].point;
                 const b = this.nodes[j].point;
-
-                if (this.canSee(a, b)) {
-                    const dist = this.distance(a, b);
+                
+                const dist = this.distance(a, b);
+                if (dist <= MAX_VISIBILITY_DISTANCE && this.canSee(a, b)) {
                     this.nodes[i].neighbors.push(j);
                     this.nodes[i].distances.push(dist);
                     this.nodes[j].neighbors.push(i);
@@ -256,19 +288,59 @@ export class PathFinder {
     }
 
     /**
+     * Check if a point is inside any building.
+     */
+    private isInsideAnyBuilding(p: Point2D): boolean {
+        for (const building of this.buildings) {
+            if (this.pointInPolygon(p, building.vertices)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Validate that all segments of a path are clear (multi-sample check).
+     * Returns true if the entire path maintains proper clearance.
+     */
+    private validatePath(waypoints: Point2D[]): boolean {
+        for (let i = 0; i < waypoints.length - 1; i++) {
+            if (!this.canSee(waypoints[i], waypoints[i + 1])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Find the shortest path from start to goal.
      */
     findPath(start: Point2D, goal: Point2D): PathResult {
         // Ensure graph is built (lazy init)
         this.ensureGraphBuilt();
         
+        const dist = this.distance(start, goal);
+        
         // If no buildings, return direct path
         if (this.buildings.length === 0) {
-            const dist = this.distance(start, goal);
             return {
                 waypoints: [start, goal],
                 totalDistance: dist,
                 found: true,
+            };
+        }
+
+        // Zone validation: both start and goal must be in compatible zones
+        // (both inside same building, or both outside all buildings)
+        const startInside = this.isInsideAnyBuilding(start);
+        const goalInside = this.isInsideAnyBuilding(goal);
+        
+        if (startInside !== goalInside) {
+            // Cannot path from inside to outside or vice versa
+            return {
+                waypoints: [start, goal],
+                totalDistance: dist,
+                found: false,
             };
         }
 
@@ -352,6 +424,18 @@ export class PathFinder {
             if (idx === goalIdx) return goal;
             return this.nodes[idx].point;
         });
+
+        // Post-validation: verify the complete path maintains clearance
+        // This catches any edge cases that slipped through individual segment checks
+        if (!this.validatePath(waypoints)) {
+            // Path validation failed - return as not found
+            // The collision detection system will handle it at runtime
+            return {
+                waypoints: [start, goal],
+                totalDistance: this.distance(start, goal),
+                found: false,
+            };
+        }
 
         // Calculate total distance
         let totalDistance = 0;
@@ -502,86 +586,42 @@ export class PathFinder {
 
     /**
      * Check if two points can see each other (no building in the way).
-     * Also checks that the path doesn't pass through narrow gaps.
+     * Optimized: uses inflated polygons for clearance (skips expensive distance calc).
      */
     private canSee(a: Point2D, b: Point2D): boolean {
-        // Use a slightly shrunk line to avoid edge cases at vertices
-        const shrink = 0.01;
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const len = Math.sqrt(dx * dx + dy * dy);
         
-        if (len < shrink * 2) return true;
+        // Very short distances are always visible
+        if (len < 0.1) return true;
         
+        // Check basic line-of-sight against original buildings first (fast rejection)
+        const shrink = 0.01;
         const aShrunk = { x: a.x + (dx / len) * shrink, y: a.y + (dy / len) * shrink };
         const bShrunk = { x: b.x - (dx / len) * shrink, y: b.y - (dy / len) * shrink };
         
-        // Basic line-of-sight check against original buildings
         if (!hasLineOfSight(aShrunk, bShrunk, this.buildings)) {
             return false;
         }
         
-        // Additional check: ensure path doesn't pass through narrow gaps
-        // Check if the path midpoint is too close to any building
-        const midX = (a.x + b.x) / 2;
-        const midY = (a.y + b.y) / 2;
-        const midpoint = { x: midX, y: midY };
-        
-        for (const building of this.buildings) {
-            const dist = this.pointToPolygonDistance(midpoint, building.vertices);
-            if (dist < MIN_GAP_WIDTH / 2) {
-                return false;
+        // Multi-sample check: verify each sample point isn't inside inflated polygons
+        // The inflated polygons already have the padding built in, so this provides clearance
+        for (let i = 0; i <= SAMPLE_COUNT; i++) {
+            const t = i / SAMPLE_COUNT;
+            const sample = { x: a.x + t * dx, y: a.y + t * dy };
+            
+            // Check if sample is inside any inflated polygon (buffer zone violation)
+            for (const inflated of this.inflatedPolygons) {
+                if (this.pointInPolygon(sample, inflated)) {
+                    return false;
+                }
             }
         }
         
         return true;
     }
     
-    /**
-     * Calculate minimum distance from a point to a polygon.
-     */
-    private pointToPolygonDistance(p: Point2D, polygon: Point2D[]): number {
-        // If point is inside polygon, return 0
-        if (this.pointInPolygon(p, polygon)) {
-            return 0;
-        }
-        
-        let minDist = Infinity;
-        const n = polygon.length;
-        
-        for (let i = 0; i < n; i++) {
-            const p1 = polygon[i];
-            const p2 = polygon[(i + 1) % n];
-            const dist = this.pointToSegmentDistance(p, p1, p2);
-            if (dist < minDist) {
-                minDist = dist;
-            }
-        }
-        
-        return minDist;
-    }
-    
-    /**
-     * Calculate distance from a point to a line segment.
-     */
-    private pointToSegmentDistance(p: Point2D, a: Point2D, b: Point2D): number {
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const lenSq = dx * dx + dy * dy;
-        
-        if (lenSq === 0) {
-            // Segment is a point
-            return this.distance(p, a);
-        }
-        
-        // Project p onto the line, clamping to segment
-        let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / lenSq;
-        t = Math.max(0, Math.min(1, t));
-        
-        const proj = { x: a.x + t * dx, y: a.y + t * dy };
-        return this.distance(p, proj);
-    }
-
     /**
      * Check if a point is inside a polygon using ray casting.
      */
@@ -624,5 +664,108 @@ export class PathFinder {
      */
     isReady(): boolean {
         return this.graphBuilt && !this.needsRebuild;
+    }
+
+    /**
+     * Generate a cache key from buildings data.
+     */
+    private generateCacheKey(buildings: Building[]): string {
+        // Create a simple hash from building count and first few building coordinates
+        if (buildings.length === 0) return '';
+        
+        let hash = buildings.length.toString();
+        for (let i = 0; i < Math.min(5, buildings.length); i++) {
+            const b = buildings[i];
+            if (b.vertices.length > 0) {
+                hash += `_${b.vertices[0].x.toFixed(1)}_${b.vertices[0].y.toFixed(1)}`;
+            }
+        }
+        // Also include total vertex count for uniqueness
+        const totalVertices = buildings.reduce((sum, b) => sum + b.vertices.length, 0);
+        hash += `_v${totalVertices}`;
+        
+        return GRAPH_CACHE_PREFIX + hash;
+    }
+
+    /**
+     * Try to load visibility graph from cache.
+     * Returns true if cache was loaded, false if not found or invalid.
+     */
+    tryLoadFromCache(buildings: Building[], padding: number): boolean {
+        if (buildings.length === 0) return false;
+        
+        const cacheKey = this.generateCacheKey(buildings);
+        if (!cacheKey) return false;
+        
+        try {
+            const cached = localStorage.getItem(cacheKey);
+            if (!cached) return false;
+            
+            const entry: GraphCacheEntry = JSON.parse(cached);
+            
+            // Validate padding matches
+            if (entry.padding !== padding) {
+                console.log('[PathFinder] Cache padding mismatch, rebuilding');
+                return false;
+            }
+            
+            // Load cached data
+            this.buildings = buildings;
+            this.padding = padding;
+            this.nodes = entry.nodes;
+            this.inflatedPolygons = entry.inflatedPolygons;
+            this.graphBuilt = true;
+            this.needsRebuild = false;
+            
+            console.log(`[PathFinder] Loaded graph from cache (${this.nodes.length} nodes)`);
+            return true;
+        } catch (e) {
+            console.warn('[PathFinder] Cache load error:', e);
+            return false;
+        }
+    }
+
+    /**
+     * Save visibility graph to cache.
+     */
+    saveToCache(): void {
+        if (!this.graphBuilt || this.buildings.length === 0) return;
+        
+        const cacheKey = this.generateCacheKey(this.buildings);
+        if (!cacheKey) return;
+        
+        try {
+            const entry: GraphCacheEntry = {
+                timestamp: Date.now(),
+                padding: this.padding,
+                nodes: this.nodes,
+                inflatedPolygons: this.inflatedPolygons,
+            };
+            
+            localStorage.setItem(cacheKey, JSON.stringify(entry));
+            console.log(`[PathFinder] Saved graph to cache (${this.nodes.length} nodes)`);
+        } catch (e) {
+            console.warn('[PathFinder] Cache save error:', e);
+        }
+    }
+
+    /**
+     * Clear all visibility graph caches.
+     */
+    static clearCache(): void {
+        const keysToRemove: string[] = [];
+        
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key?.startsWith(GRAPH_CACHE_PREFIX)) {
+                keysToRemove.push(key);
+            }
+        }
+        
+        for (const key of keysToRemove) {
+            localStorage.removeItem(key);
+        }
+        
+        console.log(`[PathFinder] Cleared ${keysToRemove.length} cached graphs`);
     }
 }

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSimulation } from '../context/SimulationContext';
 import { usePersistedState } from '../../utils/usePersistedState';
-import { fetchBuildingsAround, clearOSMCache } from '../../simulation/environment';
+import { fetchBuildingsAround, clearAllMapCache } from '../../simulation/environment';
 
 // Preset locations for easy selection
 const PRESET_LOCATIONS = [
@@ -30,6 +30,8 @@ export const EnvironmentSection: React.FC = () => {
     
     const buildingCount = engine.environment.getBuildingCount();
     const bounds = engine.environment.getBounds();
+    const isGraphBuilding = engine.pathFinder.isBuildingGraph();
+    const isGraphReady = engine.pathFinder.isReady();
     
     const isCustom = selectedPreset === PRESET_LOCATIONS.length - 1;
     const hasEnvironment = buildingCount > 0;
@@ -83,25 +85,36 @@ export const EnvironmentSection: React.FC = () => {
             const geojson = await fetchBuildingsAround(lat, lon, radius);
             engine.environment.loadFromGeoJSON(geojson, lat, lon);
             
-            setLoadingStatus('Preparing pathfinding...');
+            // Prepare pathfinding graph - this tries cache first
+            const loadedFromCache = engine.rebuildPathfindingGraph();
             
-            // Prepare pathfinding graph (marks for lazy build)
-            engine.rebuildPathfindingGraph();
-            
-            // Build the graph asynchronously with progress
-            await engine.pathFinder.buildGraphAsync();
-            
-            // Emit event so BuildingLayer and other components update
+            // Emit event so BuildingLayer renders immediately (don't wait for graph)
             engine.events.emit('environment_loaded', { 
                 buildingCount: engine.environment.getBuildingCount() 
             });
             
             console.log(`[Environment] Loaded ${engine.environment.getBuildingCount()} buildings`);
             forceUpdate({});
+            setIsLoading(false);
+            
+            // Build graph in background if not from cache
+            if (!loadedFromCache) {
+                setLoadingStatus('Building navigation graph...');
+                // Don't await - let it run in background
+                engine.pathFinder.buildGraphAsync().then(() => {
+                    setLoadingStatus('');
+                    setGraphProgress(0);
+                    forceUpdate({});
+                }).catch(e => {
+                    console.error('[PathFinder] Async build error:', e);
+                });
+            } else {
+                setLoadingStatus('');
+                setGraphProgress(0);
+            }
         } catch (e) {
             console.error('[Environment] Load error:', e);
             setError(e instanceof Error ? e.message : 'Failed to load');
-        } finally {
             setIsLoading(false);
             setLoadingStatus('');
             setGraphProgress(0);
@@ -116,7 +129,7 @@ export const EnvironmentSection: React.FC = () => {
     };
 
     const handleClearCache = () => {
-        clearOSMCache();
+        clearAllMapCache();
         setError(null);
     };
 
@@ -202,8 +215,8 @@ export const EnvironmentSection: React.FC = () => {
                         </div>
                     )}
 
-                    {/* Loading Progress */}
-                    {isLoading && (
+                    {/* Loading Progress (map fetch or graph building) */}
+                    {(isLoading || isGraphBuilding) && (
                         <div className="space-y-1">
                             <div className="flex items-center gap-2 text-[9px] text-blue-300">
                                 <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
@@ -218,6 +231,11 @@ export const EnvironmentSection: React.FC = () => {
                                         className="bg-blue-500 h-1.5 transition-all duration-150 ease-out"
                                         style={{ width: `${graphProgress * 100}%` }}
                                     />
+                                </div>
+                            )}
+                            {!isLoading && isGraphBuilding && (
+                                <div className="text-[8px] text-gray-500">
+                                    Map visible • Pathfinding unavailable until complete
                                 </div>
                             )}
                         </div>
@@ -241,6 +259,12 @@ export const EnvironmentSection: React.FC = () => {
                                 <span>Center:</span>
                                 <span className="text-gray-400 font-mono">
                                     {bounds.center.lat.toFixed(4)}, {bounds.center.lng.toFixed(4)}
+                                </span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span>Pathfinding:</span>
+                                <span className={`font-mono ${isGraphReady ? 'text-green-400' : 'text-yellow-400'}`}>
+                                    {isGraphReady ? 'Ready' : 'Building...'}
                                 </span>
                             </div>
                         </div>
@@ -279,7 +303,7 @@ export const EnvironmentSection: React.FC = () => {
                         onClick={handleClearCache}
                         className="w-full text-[9px] text-gray-600 hover:text-gray-400 transition-colors py-0.5"
                     >
-                        Clear cached map data
+                        Clear all cached map data
                     </button>
                 </div>
             </div>

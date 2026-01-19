@@ -50,3 +50,16 @@ export type { CollisionResult } from './LineOfSight';
 // PathFinder
 export { PathFinder } from './PathFinder';
 export type { PathResult, GraphBuildProgress } from './PathFinder';
+
+// Unified cache clear function
+import { PathFinder } from './PathFinder';
+import { clearOSMCache as clearOSMCacheFn } from './OSMFetcher';
+
+/**
+ * Clear all map-related cached data (OSM data + visibility graphs).
+ */
+export function clearAllMapCache(): void {
+    clearOSMCacheFn();
+    PathFinder.clearCache();
+    console.log('[Environment] Cleared all map cache data');
+}

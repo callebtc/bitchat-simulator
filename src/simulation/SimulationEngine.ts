@@ -9,7 +9,7 @@ import { EnvironmentManager, PathFinder } from './environment';
 const CONNECT_RADIUS = 100;
 const DISCONNECT_RADIUS = 110;
 /** Padding distance from building walls for pathfinding (meters) */
-const PATHFINDING_PADDING = 3;
+const PATHFINDING_PADDING = 5;
 
 export class SimulationEngine {
     spatial: SpatialManager;
@@ -48,12 +48,19 @@ export class SimulationEngine {
     /**
      * Rebuild the pathfinding graph.
      * Should be called when environment changes.
+     * Returns true if loaded from cache, false if needs building.
      */
-    rebuildPathfindingGraph(): void {
+    rebuildPathfindingGraph(): boolean {
         const buildings = this.environment.getBuildings();
-        this.pathFinder.buildVisibilityGraph(buildings, PATHFINDING_PADDING);
-        // Note: Graph is built lazily on first findPath() call
-        this.logManager.log('INFO', 'GLOBAL', `Pathfinding ready for ${buildings.length} buildings`);
+        const loadedFromCache = this.pathFinder.buildVisibilityGraph(buildings, PATHFINDING_PADDING);
+        
+        if (loadedFromCache) {
+            this.logManager.log('INFO', 'GLOBAL', `Pathfinding loaded from cache (${buildings.length} buildings)`);
+        } else if (buildings.length > 0) {
+            this.logManager.log('INFO', 'GLOBAL', `Pathfinding graph will be built (${buildings.length} buildings)`);
+        }
+        
+        return loadedFromCache;
     }
 
     removePerson(id: string) {
