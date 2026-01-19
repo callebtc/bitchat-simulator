@@ -5,6 +5,7 @@ import { useSimulation } from '../context/SimulationContext';
 import { useSelection } from '../context/SelectionContext';
 import { PersonNode } from './PersonNode';
 import { ConnectionEdge } from './ConnectionEdge';
+import { BuildingLayer } from './BuildingLayer';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
 import { InteractionPlane } from './InteractionPlane';
 import * as THREE from 'three';
@@ -82,6 +83,9 @@ export const Scene: React.FC = () => {
                 <ambientLight intensity={0.5} />
                 
                 <InteractionPlane />
+
+                {/* Building layer (rendered below nodes) */}
+                <BuildingLayer />
 
                 {personIds.map(id => (
                     <PersonNode key={id} id={id} />

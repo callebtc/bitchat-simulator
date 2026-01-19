@@ -4,6 +4,7 @@ import { EventBus } from '../events/EventBus';
 import { BitchatConnection } from './BitchatConnection';
 import { BitchatConnectionBLE } from './BitchatConnectionBLE';
 import { LogManager } from './LogManager';
+import { EnvironmentManager } from './environment';
 
 const CONNECT_RADIUS = 100;
 const DISCONNECT_RADIUS = 110;
@@ -12,6 +13,7 @@ export class SimulationEngine {
     spatial: SpatialManager;
     events: EventBus;
     logManager: LogManager;
+    environment: EnvironmentManager;
     
     private isRunning: boolean = false;
     private lastTime: number = 0;
@@ -24,6 +26,7 @@ export class SimulationEngine {
         this.spatial = new SpatialManager();
         this.events = new EventBus();
         this.logManager = new LogManager();
+        this.environment = new EnvironmentManager();
     }
 
     addPerson(person: BitchatPerson) {
@@ -92,10 +95,8 @@ export class SimulationEngine {
             person.device.tick(now);
         });
 
-        // Update Connections (Latency)
-        this.globalConnections.forEach(conn => {
-            conn.update(now);
-        });
+        // Update Connections (Latency + RSSI)
+        this.updateConnectionsRSSI(now);
 
         this.updateConnectivity();
         
@@ -126,6 +127,40 @@ export class SimulationEngine {
         return Array.from(this.globalConnections.values());
     }
 
+    /**
+     * Update RSSI for all connections and handle disconnects.
+     */
+    private updateConnectionsRSSI(now: number) {
+        const connectionsToBreak: string[] = [];
+
+        this.globalConnections.forEach((conn, key) => {
+            // Update latency queue
+            conn.update(now);
+
+            // Update RSSI for BLE connections
+            if (conn instanceof BitchatConnectionBLE) {
+                const shouldRemain = conn.updateRSSI(now);
+                if (!shouldRemain) {
+                    connectionsToBreak.push(key);
+                    this.logManager.log(
+                        'INFO', 
+                        'CONNECTION', 
+                        `Signal lost (RSSI: ${conn.rssi.toFixed(1)} dBm)`, 
+                        conn.id
+                    );
+                }
+            }
+        });
+
+        // Break connections that lost signal
+        for (const key of connectionsToBreak) {
+            const conn = this.globalConnections.get(key);
+            if (conn) {
+                this.breakConnection(key, conn);
+            }
+        }
+    }
+
     private updateConnectivity() {
         const peopleList = Array.from(this.people.values());
         
@@ -142,7 +177,7 @@ export class SimulationEngine {
                 const existingConn = this.globalConnections.get(key);
                 
                 if (existingConn) {
-                    // Check break conditions
+                    // Check break conditions (distance-based as fallback)
                     if (dist > DISCONNECT_RADIUS) {
                         this.breakConnection(key, existingConn);
                     } else if (!existingConn.isActive) {
@@ -183,12 +218,12 @@ export class SimulationEngine {
         return id1 < id2 ? `${id1}-${id2}` : `${id2}-${id1}`;
     }
     
-    private formConnection(key: string, p1: BitchatPerson, p2: BitchatPerson, initiator: any) { // Type 'any' used to bypass import needed, but it is BitchatDevice
-        // Determine role for constructor: endpointA, endpointB, initiator
-        // Note: BitchatConnection constructor just takes initiator ref
-        
+    private formConnection(key: string, p1: BitchatPerson, p2: BitchatPerson, initiator: any) {
         const conn = new BitchatConnectionBLE(p1.device, p2.device, initiator);
         conn.setLogger(this.logManager);
+        
+        // Attach environment reference for RSSI calculations
+        conn.environment = this.environment;
         
         // Hook up visualization events
         conn.onPacketSent = (packet, from) => {

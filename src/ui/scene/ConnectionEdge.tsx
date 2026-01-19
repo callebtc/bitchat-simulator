@@ -1,8 +1,9 @@
 import React, { useRef, useMemo, useState, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
-import { useSimulation } from '../context/SimulationContext'; // Import engine
+import { useSimulation } from '../context/SimulationContext';
 import * as THREE from 'three';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
+import { BitchatConnectionBLE, RSSI_CONFIG } from '../../simulation/BitchatConnectionBLE';
 import { useSelection } from '../context/SelectionContext';
 import { MessageType } from '../../protocol/BitchatPacket';
 
@@ -18,10 +19,32 @@ interface FlyingPacket {
     isRelay: boolean;
 }
 
+/**
+ * Convert RSSI to a color (green -> yellow -> orange -> red).
+ * Uses HSL for smooth transitions.
+ */
+function rssiToColor(rssi: number): THREE.Color {
+    // Normalize RSSI: -30 (best) to -85 (worst) -> 1 to 0
+    const range = RSSI_CONFIG.MAX_RSSI - RSSI_CONFIG.DISCONNECT_THRESHOLD;
+    const normalized = Math.max(0, Math.min(1, 
+        (rssi - RSSI_CONFIG.DISCONNECT_THRESHOLD) / range
+    ));
+
+    // Hue: 0 (red) to 120 (green)
+    const hue = normalized * 120 / 360;
+    const saturation = 0.8;
+    const lightness = 0.5;
+
+    const color = new THREE.Color();
+    color.setHSL(hue, saturation, lightness);
+    return color;
+}
+
 export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) => {
     const geoRef = useRef<THREE.BufferGeometry>(null);
+    const materialRef = useRef<THREE.LineBasicMaterial>(null);
     const { selectedId, select } = useSelection();
-    const engine = useSimulation(); // Get engine
+    const engine = useSimulation();
     
     // Packet Visualization State
     const [packets, setPackets] = useState<FlyingPacket[]>([]);
@@ -30,8 +53,6 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
     const isConnectionSelected = selectedId === connection.id;
     
     // Check if one of the endpoints is selected
-    // selectedId corresponds to BitchatPerson.id
-    // We need to check if that person owns endpointA or endpointB
     let isEndpointSelected = false;
     if (selectedId) {
         const person = engine.getPerson(selectedId);
@@ -52,12 +73,11 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             const p = data.packet;
             
             // Check if this is an Origin transmission or a Relay
-            const senderHex = Array.from(p.senderID as Uint8Array).map(b => b.toString(16).padStart(2, '0')).join('');
+            const senderHex = Array.from(p.senderID as Uint8Array)
+                .map(b => b.toString(16).padStart(2, '0')).join('');
             const isRelay = data.fromId !== senderHex;
             
             // Color Logic based on Type and TTL
-            // TTL 7 -> 1
-            
             let colorObj = new THREE.Color();
             let baseColor = 0xffffff;
             if (p.type === MessageType.ANNOUNCE) baseColor = 0x00ffff;
@@ -70,11 +90,9 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             colorObj.getHSL(hsl);
             
             if (isRelay) {
-                // Relay: Darker, desaturated
-                hsl.s *= 0.5; // Desaturate
-                hsl.l = 0.3;  // Fixed dimness
+                hsl.s *= 0.5;
+                hsl.l = 0.3;
             } else {
-                // Origin: Bright
                 hsl.l = 0.6;
             }
             
@@ -108,19 +126,25 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                 geoRef.current.attributes.position.needsUpdate = true;
             }
         }
+
+        // Update line color based on RSSI (if BLE connection)
+        if (materialRef.current && !isHighlighted && !isDimmed) {
+            if (connection instanceof BitchatConnectionBLE) {
+                const rssiColor = rssiToColor(connection.rssi);
+                materialRef.current.color = rssiColor;
+            }
+        }
         
         // Update Packets
         if (packets.length > 0) {
             setPackets(prev => {
                 const next: FlyingPacket[] = [];
-                // Speed: 1 unit per second? No, inverse to length?
-                // Let's say fixed speed of 100 units/sec
                 const posA = connection.endpointA.position!;
                 const posB = connection.endpointB.position!;
                 const dx = posA.x - posB.x;
                 const dy = posA.y - posB.y;
                 const dist = Math.sqrt(dx*dx + dy*dy);
-                const speed = 150; // faster
+                const speed = 150;
                 const increment = (speed * delta) / (dist || 1);
                 
                 prev.forEach(p => {
@@ -139,6 +163,14 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
         select(connection.id, 'connection');
     };
 
+    // Determine line color
+    let lineColor: THREE.Color | string = 'green';
+    if (isHighlighted) {
+        lineColor = 'yellow';
+    } else if (!isDimmed && connection instanceof BitchatConnectionBLE) {
+        lineColor = rssiToColor(connection.rssi);
+    }
+
     return (
         <group>
             {/* Visual Line */}
@@ -152,17 +184,27 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                     />
                 </bufferGeometry>
                 <lineBasicMaterial 
-                    color={isHighlighted ? 'yellow' : 'green'} 
+                    ref={materialRef}
+                    color={lineColor} 
                     transparent 
-                    opacity={isDimmed ? 0.2 : (isHighlighted ? 0.8 : 0.4)} 
+                    opacity={isDimmed ? 0.2 : (isHighlighted ? 0.8 : 0.6)} 
                     linewidth={isHighlighted ? 4 : 2} 
                 />
             </line>
             
-            {/* Click Hit Area (using wider invisible line if possible, or just the line) */}
-             <line onClick={handleClick} onPointerOver={() => document.body.style.cursor = 'pointer'} onPointerOut={() => document.body.style.cursor = 'auto'}>
+            {/* Click Hit Area */}
+             <line 
+                onClick={handleClick} 
+                onPointerOver={() => document.body.style.cursor = 'pointer'} 
+                onPointerOut={() => document.body.style.cursor = 'auto'}
+            >
                  <bufferGeometry>
-                    <bufferAttribute attach="attributes-position" count={2} array={positions} itemSize={3} />
+                    <bufferAttribute 
+                        attach="attributes-position" 
+                        count={2} 
+                        array={positions} 
+                        itemSize={3} 
+                    />
                  </bufferGeometry>
                  <lineBasicMaterial transparent opacity={0} linewidth={10} /> 
              </line>
@@ -171,7 +213,6 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             {packets.map(p => {
                 const posA = connection.endpointA.position!;
                 const posB = connection.endpointB.position!;
-                // Lerp
                 const t = p.direction === 1 ? p.progress : (1 - p.progress);
                 const x = posA.x + (posB.x - posA.x) * t;
                 const y = posA.y + (posB.y - posA.y) * t;
@@ -186,4 +227,3 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
         </group>
     );
 };
-

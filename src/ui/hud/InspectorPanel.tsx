@@ -7,6 +7,7 @@ import { getPeerColor } from '../../utils/colorUtils';
 import { PowerMode } from '../../simulation/BitchatDevice';
 import { useLayout } from '../context/LayoutContext';
 import { usePersistedState } from '../../utils/usePersistedState';
+import { BitchatConnectionBLE, RSSI_CONFIG, setRssiNoiseAmplitude } from '../../simulation/BitchatConnectionBLE';
 
 // Helper for Collapsible Sections
 const CollapsibleSection: React.FC<{ 
@@ -47,6 +48,43 @@ const DataRow: React.FC<{ label: string; value: React.ReactNode; valueColor?: st
         <span className={`font-mono ${valueColor} text-right truncate ml-2`}>{value}</span>
     </div>
 );
+
+// RSSI color helper
+const getRssiColor = (rssi: number): string => {
+    const range = RSSI_CONFIG.MAX_RSSI - RSSI_CONFIG.DISCONNECT_THRESHOLD;
+    const normalized = Math.max(0, Math.min(1, (rssi - RSSI_CONFIG.DISCONNECT_THRESHOLD) / range));
+    
+    if (normalized > 0.7) return 'text-green-400';
+    if (normalized > 0.4) return 'text-yellow-400';
+    if (normalized > 0.2) return 'text-orange-400';
+    return 'text-red-400';
+};
+
+// RSSI bar component
+const RssiBar: React.FC<{ rssi: number }> = ({ rssi }) => {
+    const range = RSSI_CONFIG.MAX_RSSI - RSSI_CONFIG.DISCONNECT_THRESHOLD;
+    const normalized = Math.max(0, Math.min(1, (rssi - RSSI_CONFIG.DISCONNECT_THRESHOLD) / range));
+    const percentage = normalized * 100;
+    
+    let barColor = 'bg-green-500';
+    if (normalized <= 0.2) barColor = 'bg-red-500';
+    else if (normalized <= 0.4) barColor = 'bg-orange-500';
+    else if (normalized <= 0.7) barColor = 'bg-yellow-500';
+    
+    return (
+        <div className="flex items-center gap-2 w-full">
+            <div className="flex-1 h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                <div 
+                    className={`h-full ${barColor} transition-all duration-300`}
+                    style={{ width: `${percentage}%` }}
+                />
+            </div>
+            <span className={`font-mono text-[10px] w-14 text-right ${getRssiColor(rssi)}`}>
+                {rssi.toFixed(0)} dBm
+            </span>
+        </div>
+    );
+};
 
 const PanelWrapper: React.FC<{ children: React.ReactNode; title: string; subtitle?: string; onClose: () => void; height: number }> = ({ children, title, subtitle, onClose, height }) => (
     <div 
@@ -167,36 +205,55 @@ export const InspectorPanel: React.FC = () => {
                     />
                 </CollapsibleSection>
 
-                {/* Connection Limits */}
-                <CollapsibleSection title="BLE CONFIG" accentColor="text-gray-500" persistenceKey="inspector_ble_config">
-                     <div className="grid grid-cols-3 gap-1.5 text-[10px] text-center">
-                        <div className="bg-gray-900 rounded p-1.5 border border-gray-800">
-                            <div className="text-gray-600 mb-1">MAX CL</div>
-                            <input 
-                                type="number" 
-                                className="bg-transparent text-center w-full focus:outline-none text-white font-bold"
-                                value={device.connectionSettings.maxClients}
-                                onChange={(e) => device.updateSettings({ maxClients: parseInt(e.target.value) || 0 })}
-                            />
+                {/* BLE Configuration - Compact */}
+                <CollapsibleSection title="BLE CONFIG" accentColor="text-gray-500" persistenceKey="inspector_ble_config" defaultOpen={false}>
+                    {/* Connection Limits - Single Row */}
+                    <div className="flex items-center gap-1 text-[10px] mb-2">
+                        <span className="text-gray-500 w-12">Limits:</span>
+                        <div className="flex gap-1 flex-1">
+                            <div className="flex items-center gap-1 bg-gray-900/50 px-1.5 py-0.5 rounded border border-gray-800">
+                                <span className="text-gray-600">CL</span>
+                                <input 
+                                    type="number" 
+                                    className="bg-transparent w-6 text-center focus:outline-none text-white font-bold"
+                                    value={device.connectionSettings.maxClients}
+                                    onChange={(e) => device.updateSettings({ maxClients: parseInt(e.target.value) || 0 })}
+                                />
+                            </div>
+                            <div className="flex items-center gap-1 bg-gray-900/50 px-1.5 py-0.5 rounded border border-gray-800">
+                                <span className="text-gray-600">SV</span>
+                                <input 
+                                    type="number" 
+                                    className="bg-transparent w-6 text-center focus:outline-none text-white font-bold"
+                                    value={device.connectionSettings.maxServers}
+                                    onChange={(e) => device.updateSettings({ maxServers: parseInt(e.target.value) || 0 })}
+                                />
+                            </div>
+                            <div className="flex items-center gap-1 bg-gray-900/50 px-1.5 py-0.5 rounded border border-gray-800">
+                                <span className="text-gray-600">TOT</span>
+                                <input 
+                                    type="number" 
+                                    className="bg-transparent w-6 text-center focus:outline-none text-white font-bold"
+                                    value={device.connectionSettings.maxTotal}
+                                    onChange={(e) => device.updateSettings({ maxTotal: parseInt(e.target.value) || 0 })}
+                                />
+                            </div>
                         </div>
-                        <div className="bg-gray-900 rounded p-1.5 border border-gray-800">
-                            <div className="text-gray-600 mb-1">MAX SV</div>
-                            <input 
-                                type="number" 
-                                className="bg-transparent text-center w-full focus:outline-none text-white font-bold"
-                                value={device.connectionSettings.maxServers}
-                                onChange={(e) => device.updateSettings({ maxServers: parseInt(e.target.value) || 0 })}
-                            />
-                        </div>
-                        <div className="bg-gray-900 rounded p-1.5 border border-gray-800">
-                            <div className="text-gray-600 mb-1">TOTAL</div>
-                            <input 
-                                type="number" 
-                                className="bg-transparent text-center w-full focus:outline-none text-white font-bold"
-                                value={device.connectionSettings.maxTotal}
-                                onChange={(e) => device.updateSettings({ maxTotal: parseInt(e.target.value) || 0 })}
-                            />
-                        </div>
+                    </div>
+                    
+                    {/* RSSI Noise Level */}
+                    <div className="flex items-center gap-2 text-[10px]">
+                        <span className="text-gray-500 w-12">Noise:</span>
+                        <input 
+                            type="range"
+                            min="0"
+                            max="10"
+                            step="0.5"
+                            value={RSSI_CONFIG.NOISE_AMPLITUDE}
+                            onChange={(e) => setRssiNoiseAmplitude(parseFloat(e.target.value))}
+                            className="flex-1 h-1 accent-cyan-500 cursor-pointer"
+                        />
+                        <span className="text-cyan-400 font-mono w-10 text-right">{RSSI_CONFIG.NOISE_AMPLITUDE.toFixed(1)}dB</span>
                     </div>
                 </CollapsibleSection>
 
@@ -232,17 +289,34 @@ export const InspectorPanel: React.FC = () => {
                 {/* Active Connections */}
                 <CollapsibleSection title={`CONNECTIONS (${conns.length})`} accentColor="text-green-600" persistenceKey="inspector_node_connections">
                     <div className="space-y-1">
-                        {conns.map(p => (
-                            <div 
-                                key={p.peerIDHex} 
-                                className="flex justify-between items-center text-xs bg-gray-900/30 p-1.5 rounded border border-gray-800/50 hover:bg-gray-800/50 transition-colors"
-                                onMouseEnter={() => setHighlightedId(p.peerIDHex)}
-                                onMouseLeave={() => setHighlightedId(null)}
-                            >
-                                <span className="font-bold" style={{ color: getPeerColor(p.peerIDHex) }}>{p.nickname}</span>
-                                <span className="font-mono text-gray-600 text-[10px]">{p.peerIDHex.substring(0,6)}</span>
-                            </div>
-                        ))}
+                        {conns.map(p => {
+                            // Find the connection to get RSSI
+                            const allConns = engine.getAllConnections();
+                            const conn = allConns.find(c => 
+                                c.involves(device) && c.involves(p)
+                            );
+                            const rssi = conn instanceof BitchatConnectionBLE ? conn.rssi : null;
+                            const rssiColor = rssi !== null ? getRssiColor(rssi) : 'text-gray-500';
+                            
+                            return (
+                                <div 
+                                    key={p.peerIDHex} 
+                                    className="flex justify-between items-center text-xs bg-gray-900/30 p-1.5 rounded border border-gray-800/50 hover:bg-gray-800/50 transition-colors"
+                                    onMouseEnter={() => setHighlightedId(p.peerIDHex)}
+                                    onMouseLeave={() => setHighlightedId(null)}
+                                >
+                                    <span className="font-bold" style={{ color: getPeerColor(p.peerIDHex) }}>{p.nickname}</span>
+                                    <div className="flex items-center gap-2">
+                                        {rssi !== null && (
+                                            <span className={`font-mono text-[10px] ${rssiColor}`}>
+                                                {rssi.toFixed(0)}dBm
+                                            </span>
+                                        )}
+                                        <span className="font-mono text-gray-600 text-[10px]">{p.peerIDHex.substring(0,6)}</span>
+                                    </div>
+                                </div>
+                            );
+                        })}
                         {conns.length === 0 && <div className="text-[10px] text-gray-600 italic text-center py-2">No active physical links</div>}
                     </div>
                 </CollapsibleSection>
@@ -269,6 +343,9 @@ export const InspectorPanel: React.FC = () => {
         const conn = conns.find(c => c.id === selectedId);
         
         if (!conn) return null;
+        
+        const isBLE = conn instanceof BitchatConnectionBLE;
+        const rssi = isBLE ? conn.rssi : null;
 
         return (
             <PanelWrapper title="CONNECTION LINK" subtitle={conn.id.substring(0,18) + "..."} onClose={() => select(null, null)} height={bottomPanelHeight}>
@@ -296,6 +373,18 @@ export const InspectorPanel: React.FC = () => {
                         <div className="text-[9px] text-gray-600 font-mono">{conn.endpointB.peerIDHex.substring(0,4)}</div>
                     </div>
                 </div>
+
+                {/* RSSI Signal Strength */}
+                {rssi !== null && (
+                    <div className="mb-3 bg-gray-900/30 p-2.5 rounded border border-gray-800">
+                        <div className="text-[9px] text-gray-500 uppercase tracking-wider mb-2">SIGNAL STRENGTH</div>
+                        <RssiBar rssi={rssi} />
+                        <div className="flex justify-between mt-1.5 text-[9px] text-gray-600">
+                            <span>Threshold: {RSSI_CONFIG.DISCONNECT_THRESHOLD}dBm</span>
+                            <span>Max: {RSSI_CONFIG.MAX_RSSI}dBm</span>
+                        </div>
+                    </div>
+                )}
 
                 <CollapsibleSection title="TRAFFIC STATS" accentColor="text-cyan-600" persistenceKey="inspector_conn_traffic">
                     <div className="grid grid-cols-2 gap-2 mb-2">
