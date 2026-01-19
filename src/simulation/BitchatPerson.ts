@@ -43,6 +43,18 @@ export class BitchatPerson {
     private readonly WANDER_STRENGTH = 0.5; // rad/s change
     /** Distance threshold to consider waypoint reached */
     private readonly WAYPOINT_THRESHOLD = 2;
+    
+    // Stuck detection & recovery
+    private stuckTimer: number = 0;
+    private recoveryDuration: number = 1;  // starts at 1s, doubles each attempt
+    private isRecovering: boolean = false;
+    private savedTarget: Point | null = null;
+    private unstuckTimer: number = 0;
+    
+    private readonly STUCK_SPEED_THRESHOLD = 0.5;
+    private readonly STUCK_TIME_THRESHOLD = 0.5;  // 0.5s to detect stuck
+    private readonly UNSTUCK_TIME_THRESHOLD = 1;  // 1s of movement to confirm unstuck
+    private readonly MAX_RECOVERY_DURATION = 10;  // max 10s random walk
 
     constructor(id: string, position: Point, device: BitchatDevice) {
         this.id = id;
@@ -114,6 +126,12 @@ export class BitchatPerson {
     }
 
     update(dt: number) {
+        // Handle stuck recovery mode
+        if (this.isRecovering) {
+            this.updateRecovery(dt);
+            return;
+        }
+        
         if (this.mode === MovementMode.STILL) {
             this.velocity = {x:0, y:0};
         }
@@ -122,6 +140,19 @@ export class BitchatPerson {
         } 
         else if (this.mode === MovementMode.TARGET && this.target) {
             this.updateTargetSeek(dt);
+            
+            // Check for stuck condition
+            const speed = Math.sqrt(this.velocity.x ** 2 + this.velocity.y ** 2);
+            if (speed < this.STUCK_SPEED_THRESHOLD) {
+                this.stuckTimer += dt;
+                if (this.stuckTimer > this.STUCK_TIME_THRESHOLD) {
+                    // Start recovery: switch to random walk
+                    this.startStuckRecovery();
+                    return;
+                }
+            } else {
+                this.stuckTimer = 0;
+            }
         }
 
         // Calculate proposed new position
@@ -147,6 +178,122 @@ export class BitchatPerson {
             // No collision detection, move freely
             this.position.x = newX;
             this.position.y = newY;
+        }
+    }
+    
+    /**
+     * Start stuck recovery mode: save target and switch to random walk.
+     */
+    private startStuckRecovery(): void {
+        this.savedTarget = this.target;
+        this.isRecovering = true;
+        this.unstuckTimer = 0;
+        this.stuckTimer = 0;
+        
+        // Switch to random walk
+        this.mode = MovementMode.RANDOM_WALK;
+        this.wanderAngle = Math.random() * Math.PI * 2;
+        this.velocity = { 
+            x: Math.cos(this.wanderAngle) * this.MAX_SPEED * 0.5, 
+            y: Math.sin(this.wanderAngle) * this.MAX_SPEED * 0.5 
+        };
+    }
+    
+    /**
+     * Update during stuck recovery mode.
+     */
+    private updateRecovery(dt: number): void {
+        // Do random walk movement
+        this.updateRandomWalk(dt);
+        
+        // Calculate proposed new position
+        const newX = this.position.x + this.velocity.x * dt;
+        const newY = this.position.y + this.velocity.y * dt;
+
+        // Apply collision detection
+        if (this.environment && this.environment.getBuildingCount() > 0) {
+            const from = { x: this.position.x, y: this.position.y };
+            const to = { x: newX, y: newY };
+            
+            const result = this.environment.resolveMovement(from, to);
+            
+            this.position.x = result.position.x;
+            this.position.y = result.position.y;
+            
+            if (result.blocked) {
+                this.wanderAngle += Math.PI * 0.5 + Math.random() * Math.PI;
+            }
+        } else {
+            this.position.x = newX;
+            this.position.y = newY;
+        }
+        
+        // Check if we're moving well (unstuck)
+        const speed = Math.sqrt(this.velocity.x ** 2 + this.velocity.y ** 2);
+        if (speed > this.STUCK_SPEED_THRESHOLD * 2) {
+            this.unstuckTimer += dt;
+            
+            if (this.unstuckTimer > this.UNSTUCK_TIME_THRESHOLD) {
+                // Successfully unstuck - return to target
+                this.endStuckRecovery(true);
+            }
+        } else {
+            // Still stuck, keep trying
+            this.unstuckTimer = 0;
+        }
+        
+        // Check if recovery duration exceeded
+        this.stuckTimer += dt;
+        if (this.stuckTimer > this.recoveryDuration) {
+            // Recovery duration exceeded, try returning to target anyway
+            // but increase recovery duration for next time
+            this.recoveryDuration = Math.min(this.recoveryDuration * 2, this.MAX_RECOVERY_DURATION);
+            this.endStuckRecovery(false);
+        }
+    }
+    
+    /**
+     * End stuck recovery and return to target seeking.
+     */
+    private endStuckRecovery(success: boolean): void {
+        this.isRecovering = false;
+        this.stuckTimer = 0;
+        this.unstuckTimer = 0;
+        
+        if (success) {
+            // Reset recovery duration on success
+            this.recoveryDuration = 1;
+        }
+        
+        // Restore target and recalculate path from new position
+        if (this.savedTarget) {
+            this.target = this.savedTarget;
+            this.savedTarget = null;
+            
+            // Recalculate path from new position
+            if (this.pathFinder && this.environment && this.environment.getBuildingCount() > 0) {
+                const result: PathResult = this.pathFinder.findPath(
+                    { x: this.position.x, y: this.position.y },
+                    { x: this.target.x, y: this.target.y }
+                );
+                
+                if (result.found && result.waypoints.length > 1) {
+                    this.path = result.waypoints.map(wp => ({ x: wp.x, y: wp.y }));
+                    this.currentWaypointIndex = 1;
+                } else {
+                    this.path = null;
+                    this.currentWaypointIndex = 0;
+                }
+            } else {
+                this.path = null;
+                this.currentWaypointIndex = 0;
+            }
+            
+            this.mode = MovementMode.TARGET;
+        } else {
+            // No saved target, just stop
+            this.mode = MovementMode.STILL;
+            this.velocity = { x: 0, y: 0 };
         }
     }
     

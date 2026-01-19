@@ -102,6 +102,7 @@ export const PathVisualizer: React.FC = () => {
 const HoverVisualization: React.FC<{ person: BitchatPerson }> = ({ person }) => {
     const groupRef = useRef<THREE.Group>(null);
     const arrowRef = useRef<THREE.Group>(null);
+    const [currentPos, setCurrentPos] = useState({ x: person.position.x, y: person.position.y });
     
     // Determine if person is moving
     const isMoving = person.mode !== MovementMode.STILL;
@@ -131,13 +132,29 @@ const HoverVisualization: React.FC<{ person: BitchatPerson }> = ({ person }) => 
         // Update group position to follow person
         groupRef.current.position.x = person.position.x;
         groupRef.current.position.y = person.position.y;
+        
+        // Track position for line updates
+        setCurrentPos({ x: person.position.x, y: person.position.y });
     });
 
-    // Build path points for the line
-    const pathPoints = useMemo(() => {
-        if (!remainingPath || remainingPath.length < 2) return null;
-        return remainingPath.map(p => new THREE.Vector3(p.x, p.y, 0.5));
-    }, [remainingPath]);
+    // Build path points for the line: use path if available, otherwise direct line to target
+    const linePoints = useMemo(() => {
+        // If we have a remaining path, use it
+        if (remainingPath && remainingPath.length >= 2) {
+            return remainingPath.map(p => new THREE.Vector3(p.x, p.y, 0.5));
+        }
+        // Otherwise, if we have a target, draw direct line
+        if (person.target) {
+            return [
+                new THREE.Vector3(currentPos.x, currentPos.y, 0.5),
+                new THREE.Vector3(person.target.x, person.target.y, 0.5)
+            ];
+        }
+        return null;
+    }, [remainingPath, person.target, currentPos.x, currentPos.y]);
+    
+    // Determine the target position for the marker
+    const targetPosition = person.target || (remainingPath && remainingPath.length > 0 ? remainingPath[remainingPath.length - 1] : null);
 
     return (
         <group ref={groupRef}>
@@ -148,11 +165,11 @@ const HoverVisualization: React.FC<{ person: BitchatPerson }> = ({ person }) => 
                 </group>
             )}
             
-            {/* Ghost Path (relative to current position, so need world coords) */}
-            {pathPoints && pathPoints.length >= 2 && (
-                <group position={[-person.position.x, -person.position.y, 0]}>
+            {/* Path/Target Line - always in world coordinates */}
+            {linePoints && linePoints.length >= 2 && (
+                <group position={[-currentPos.x, -currentPos.y, 0]}>
                     <Line
-                        points={pathPoints}
+                        points={linePoints}
                         color={PATH_COLOR}
                         lineWidth={2}
                         dashed
@@ -162,8 +179,8 @@ const HoverVisualization: React.FC<{ person: BitchatPerson }> = ({ person }) => 
                         opacity={PATH_OPACITY}
                     />
                     {/* Target marker */}
-                    {person.target && (
-                        <TargetMarker position={person.target} />
+                    {targetPosition && (
+                        <TargetMarker position={targetPosition} />
                     )}
                 </group>
             )}
