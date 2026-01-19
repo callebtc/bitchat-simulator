@@ -85,6 +85,11 @@ const FlashInstance: React.FC<{ flash: ActiveFlash }> = ({ flash }) => {
     const lineRef = useRef<any>(null);
     const [opacity, setOpacity] = useState(1);
     
+    // Helper to find person by device ID
+    const getPersonByDeviceId = (deviceIdHex: string) => {
+        return engine.getAllPeople().find(p => p.device.peerIDHex === deviceIdHex);
+    };
+    
     // Calculate points every frame to follow moving nodes
     useFrame(() => {
         const now = performance.now();
@@ -99,9 +104,9 @@ const FlashInstance: React.FC<{ flash: ActiveFlash }> = ({ flash }) => {
              let valid = true;
              
              for (const id of flash.pathIds) {
-                 const person = engine.getPerson(id);
+                 const person = getPersonByDeviceId(id);
                  if (person) {
-                     currentPoints.push(new THREE.Vector3(person.position.x, person.position.y, 0)); 
+                     currentPoints.push(new THREE.Vector3(person.position.x, person.position.y, 10)); 
                  } else {
                      valid = false;
                      break;
@@ -110,7 +115,7 @@ const FlashInstance: React.FC<{ flash: ActiveFlash }> = ({ flash }) => {
 
              if (valid && currentPoints.length > 1) {
                  lineRef.current.geometry.setPositions(
-                     currentPoints.flatMap(p => [p.x, p.y, 0]) // Line2 expects flat array
+                     currentPoints.flatMap(p => [p.x, p.y, 10]) // Line2 expects flat array
                  );
              }
         }
@@ -118,8 +123,8 @@ const FlashInstance: React.FC<{ flash: ActiveFlash }> = ({ flash }) => {
 
     // Initial check for validity to prevent render if nodes missing
     const initialPoints = flash.pathIds.map(id => {
-        const p = engine.getPerson(id);
-        return p ? new THREE.Vector3(p.position.x, p.position.y, 0) : null;
+        const p = getPersonByDeviceId(id);
+        return p ? new THREE.Vector3(p.position.x, p.position.y, 10) : null;
     }).filter(Boolean) as THREE.Vector3[];
 
     if (initialPoints.length < 2) return null;
@@ -133,7 +138,7 @@ const FlashInstance: React.FC<{ flash: ActiveFlash }> = ({ flash }) => {
             transparent
             opacity={opacity}
             depthTest={false} // Draw on top
-            renderOrder={1}
+            renderOrder={100}
         />
     );
 };
