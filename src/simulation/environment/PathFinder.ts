@@ -701,6 +701,7 @@ export class PathFinder {
      * Returns true if cache was loaded, false if not found or invalid.
      */
     tryLoadFromCache(buildings: Building[], padding: number): boolean {
+        if (typeof localStorage === 'undefined') return false;
         if (buildings.length === 0) return false;
         
         const cacheKey = this.generateCacheKey(buildings);
@@ -738,6 +739,7 @@ export class PathFinder {
      * Save visibility graph to cache.
      */
     saveToCache(): void {
+        if (typeof localStorage === 'undefined') return;
         if (!this.graphBuilt || this.buildings.length === 0) return;
         
         const cacheKey = this.generateCacheKey(this.buildings);
