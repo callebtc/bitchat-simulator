@@ -7,6 +7,7 @@ import { PersonNode } from './PersonNode';
 import { ConnectionEdge } from './ConnectionEdge';
 import { BuildingLayer } from './BuildingLayer';
 import { PathVisualizer } from './PathVisualizer';
+import { RouteVisualizer } from './RouteVisualizer';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
 import { InteractionPlane } from './InteractionPlane';
 import { ScaleUpdater } from '../hud/ScaleIndicator';
@@ -107,6 +108,9 @@ export const Scene: React.FC = () => {
                 
                 {/* Path visualization for hover/animation */}
                 <PathVisualizer />
+                
+                {/* Route visualization for source-routed packet flashes */}
+                <RouteVisualizer />
             </Canvas>
         </div>
     );

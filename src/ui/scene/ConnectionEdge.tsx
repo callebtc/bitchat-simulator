@@ -117,6 +117,11 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             if (p.type === MessageType.ANNOUNCE) baseColor = 0x00ffff;
             if (p.type === MessageType.MESSAGE) baseColor = 0x00ff00;
             
+            // Source Routing Override
+            if (p.route && p.route.length > 0) {
+                baseColor = 0xFFC107; // Golden Orange
+            }
+            
             colorObj.setHex(baseColor);
             
             // Dim it based on TTL using HSL
@@ -280,6 +285,22 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                      </bufferGeometry>
                      <lineBasicMaterial transparent opacity={0} linewidth={10} /> 
                  </line>
+
+                 {/* Flying Packets (Even in Graph Mode) */}
+                 {packets.map(p => {
+                    const posA = connection.endpointA.position!;
+                    const posB = connection.endpointB.position!;
+                    const t = p.direction === 1 ? p.progress : (1 - p.progress);
+                    const x = posA.x + (posB.x - posA.x) * t;
+                    const y = posA.y + (posB.y - posA.y) * t;
+                    
+                    return (
+                        <mesh key={p.id} position={[x, y, 0]}>
+                            <sphereGeometry args={[p.isRelay ? 1.5 : 2.5, 8, 8]} />
+                            <meshBasicMaterial color={p.color} />
+                        </mesh>
+                    );
+                })}
             </group>
         );
     } else {
