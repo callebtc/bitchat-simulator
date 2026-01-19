@@ -5,13 +5,10 @@
  */
 
 import { Building, Point2D } from './types';
-import { hasLineOfSight } from './LineOfSight';
+import { hasLineOfSight, hasClearance, isPointStrictlyInside } from './LineOfSight';
 
 /** Default padding distance from building walls (meters) */
 const DEFAULT_PADDING = 3;
-
-/** Number of sample points to check along each path segment (reduced for speed) */
-const SAMPLE_COUNT = 3;
 
 /** Maximum distance to consider for visibility edges (optimization) */
 const MAX_VISIBILITY_DISTANCE = 150;
@@ -150,11 +147,21 @@ export class PathFinder {
         }
 
         // Extract padded corner points from all buildings
-        const cornerPoints: Point2D[] = [];
+        let cornerPoints: Point2D[] = [];
         for (const building of this.buildings) {
             const padded = this.getPaddedVertices(building.vertices);
             cornerPoints.push(...padded);
         }
+
+        // Filter out points that are strictly inside other inflated polygons
+        cornerPoints = cornerPoints.filter(p => {
+            for (const inflated of this.inflatedPolygons) {
+                if (isPointStrictlyInside(p, inflated)) {
+                    return false;
+                }
+            }
+            return true;
+        });
 
         // Create nodes for each corner point
         for (const point of cornerPoints) {
@@ -245,11 +252,21 @@ export class PathFinder {
         }
 
         // Extract padded corner points from all buildings
-        const cornerPoints: Point2D[] = [];
+        let cornerPoints: Point2D[] = [];
         for (const building of this.buildings) {
             const padded = this.getPaddedVertices(building.vertices);
             cornerPoints.push(...padded);
         }
+
+        // Filter out points that are strictly inside other inflated polygons
+        cornerPoints = cornerPoints.filter(p => {
+            for (const inflated of this.inflatedPolygons) {
+                if (isPointStrictlyInside(p, inflated)) {
+                    return false;
+                }
+            }
+            return true;
+        });
 
         // Create nodes for each corner point
         for (const point of cornerPoints) {
@@ -410,10 +427,10 @@ export class PathFinder {
         }
 
         if (!path) {
-            // No path found - return direct path anyway (collision will handle it)
+            // No path found
             return {
-                waypoints: [start, goal],
-                totalDistance: this.distance(start, goal),
+                waypoints: [],
+                totalDistance: 0,
                 found: false,
             };
         }
@@ -605,18 +622,10 @@ export class PathFinder {
             return false;
         }
         
-        // Multi-sample check: verify each sample point isn't inside inflated polygons
-        // The inflated polygons already have the padding built in, so this provides clearance
-        for (let i = 0; i <= SAMPLE_COUNT; i++) {
-            const t = i / SAMPLE_COUNT;
-            const sample = { x: a.x + t * dx, y: a.y + t * dy };
-            
-            // Check if sample is inside any inflated polygon (buffer zone violation)
-            for (const inflated of this.inflatedPolygons) {
-                if (this.pointInPolygon(sample, inflated)) {
-                    return false;
-                }
-            }
+        // Check if the path maintains clearance (using inflated polygons)
+        // This ensures the path doesn't cut through the safety margin
+        if (!hasClearance(a, b, this.inflatedPolygons)) {
+            return false;
         }
         
         return true;

@@ -9,7 +9,7 @@ import { EnvironmentManager, PathFinder } from './environment';
 const CONNECT_RADIUS = 100;
 const DISCONNECT_RADIUS = 110;
 /** Padding distance from building walls for pathfinding (meters) */
-const PATHFINDING_PADDING = 5;
+const PATHFINDING_PADDING = 2.5;
 
 export class SimulationEngine {
     spatial: SpatialManager;

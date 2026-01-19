@@ -205,6 +205,107 @@ export function hasLineOfSight(
     return true;
 }
 
+/**
+ * Check if a line segment has clearance from a set of polygons.
+ * Returns true if the segment does not intersect the interior of any polygon.
+ * Grazing intersections (at t=0, t=1, or along an edge) are allowed.
+ * 
+ * @param a - Start point
+ * @param b - End point
+ * @param polygons - List of polygons (e.g., inflated obstacles)
+ */
+export function hasClearance(
+    a: Point2D,
+    b: Point2D,
+    polygons: Point2D[][]
+): boolean {
+    const EPSILON = 1e-5;
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+
+    for (const poly of polygons) {
+        // 1. Check for proper edge crossings
+        const n = poly.length;
+        for (let i = 0; i < n; i++) {
+            const v1 = poly[i];
+            const v2 = poly[(i + 1) % n];
+            
+            const intersection = lineSegmentIntersection(a, b, v1, v2);
+            // Ignore intersections at endpoints (t=0 or t=1)
+            // Only care if we cross the edge somewhere in the middle
+            if (intersection && intersection.t > EPSILON && intersection.t < 1 - EPSILON) {
+                return false;
+            }
+        }
+
+        // 2. Check if segment goes through interior
+        // If midpoint is inside and NOT on an edge, it's blocked
+        // (This catches diagonals through the interior of a convex polygon)
+        if (pointInPolygon(mid, poly)) {
+             let onEdge = false;
+             for (let i = 0; i < n; i++) {
+                 const v1 = poly[i];
+                 const v2 = poly[(i + 1) % n];
+                 if (distancePointToSegment(mid, v1, v2) < EPSILON) {
+                     onEdge = true;
+                     break;
+                 }
+             }
+             
+             if (!onEdge) {
+                 return false;
+             }
+        }
+    }
+    
+    return true;
+}
+
+/**
+ * Check if a point is strictly inside a polygon (not on the edge).
+ */
+export function isPointStrictlyInside(p: Point2D, polygon: Point2D[]): boolean {
+    const EPSILON = 1e-5;
+    if (!pointInPolygon(p, polygon)) return false;
+    
+    // Check if on edge
+    const n = polygon.length;
+    for (let i = 0; i < n; i++) {
+        const v1 = polygon[i];
+        const v2 = polygon[(i + 1) % n];
+        if (distancePointToSegment(p, v1, v2) < EPSILON) {
+            return false; // On edge, not strictly inside
+        }
+    }
+    return true;
+}
+
+/**
+ * Calculate distance from point p to line segment v1-v2.
+ */
+function distancePointToSegment(p: Point2D, v1: Point2D, v2: Point2D): number {
+    const dx = v2.x - v1.x;
+    const dy = v2.y - v1.y;
+    const lenSq = dx * dx + dy * dy;
+    
+    if (lenSq === 0) {
+        const dpx = p.x - v1.x;
+        const dpy = p.y - v1.y;
+        return Math.sqrt(dpx * dpx + dpy * dpy);
+    }
+    
+    // Project point onto line, clamped to segment
+    let t = ((p.x - v1.x) * dx + (p.y - v1.y) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    
+    const projX = v1.x + t * dx;
+    const projY = v1.y + t * dy;
+    
+    const dpx = p.x - projX;
+    const dpy = p.y - projY;
+    
+    return Math.sqrt(dpx * dpx + dpy * dpy);
+}
+
 // ============================================================================
 // Collision Detection Helpers
 // ============================================================================
