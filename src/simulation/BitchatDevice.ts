@@ -1,9 +1,25 @@
 import { ConnectionManager } from './ConnectionManager';
 import { BitchatPacket } from '../protocol/BitchatPacket';
 import { LogManager } from './LogManager';
-// import { BitchatAppSimulator } from './AppLayer/BitchatAppSimulator'; // Circular, avoid explicit type if possible or use interface
-
 import { Point } from './types';
+
+export enum PowerMode {
+    ECO = 'ECO',
+    NORMAL = 'NORMAL',
+    PERFORMANCE = 'PERFORMANCE'
+}
+
+export interface ConnectionSettings {
+    maxClients: number;
+    maxServers: number;
+    maxTotal: number;
+}
+
+export const SCAN_INTERVALS: Record<PowerMode, number> = {
+    [PowerMode.ECO]: 60000,
+    [PowerMode.NORMAL]: 30000,
+    [PowerMode.PERFORMANCE]: 10000
+};
 
 export interface DeviceTickable {
     tick(now: number): void;
@@ -15,8 +31,20 @@ export class BitchatDevice {
     nickname: string;
     connectionManager: ConnectionManager;
     appSimulator?: DeviceTickable;
-    position?: Point; // Simulation hack for visualization
+    position?: Point; 
     logger?: LogManager;
+    
+    // Power & Scanning
+    powerMode: PowerMode = PowerMode.NORMAL;
+    lastScanTime: number = 0;
+    isScanning: boolean = false;
+    
+    // Limits
+    connectionSettings: ConnectionSettings = {
+        maxClients: 8,
+        maxServers: 8,
+        maxTotal: 8
+    };
     
     // Callbacks
     onPacketReceived?: (packet: BitchatPacket, from: BitchatDevice) => void;
@@ -25,6 +53,20 @@ export class BitchatDevice {
         this.peerID = peerID;
         this.nickname = nickname;
         this.connectionManager = new ConnectionManager(this);
+        
+        // Randomize initial scan phase to avoid global sync
+        this.lastScanTime = -Math.random() * 30000;
+    }
+    
+    setPowerMode(mode: PowerMode) {
+        this.powerMode = mode;
+        this.logger?.log('INFO', 'DEVICE', `Power Mode set to ${mode}`, this.peerIDHex);
+    }
+    
+    updateSettings(settings: Partial<ConnectionSettings>) {
+        this.connectionSettings = { ...this.connectionSettings, ...settings };
+        this.connectionManager.enforceLimits();
+        this.logger?.log('INFO', 'DEVICE', `Connection Limits updated`, this.peerIDHex, this.connectionSettings);
     }
     
     setLogger(logger: LogManager) {
@@ -43,8 +85,18 @@ export class BitchatDevice {
     }
 
     tick(now: number) {
+        // App Logic
         if (this.appSimulator) {
             this.appSimulator.tick(now);
+        }
+        
+        // Scanning Logic
+        this.isScanning = false;
+        const interval = SCAN_INTERVALS[this.powerMode];
+        if (now - this.lastScanTime > interval) {
+            this.isScanning = true;
+            this.lastScanTime = now;
+            // this.logger?.log('DEBUG', 'DEVICE', 'Scanning...', this.peerIDHex);
         }
     }
 
@@ -55,13 +107,11 @@ export class BitchatDevice {
     }
     
     receivePacket(packet: BitchatPacket, from: BitchatDevice) {
-        // Hand off to AppSimulator layer (via callback for now)
         if (this.onPacketReceived) {
             this.onPacketReceived(packet, from);
         }
     }
 
-    // Helper to generate a random device
     static createRandom(): BitchatDevice {
         const id = new Uint8Array(8);
         crypto.getRandomValues(id);

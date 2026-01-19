@@ -142,14 +142,37 @@ export class SimulationEngine {
                 const existingConn = this.globalConnections.get(key);
                 
                 if (existingConn) {
-                    // Check break
+                    // Check break conditions
                     if (dist > DISCONNECT_RADIUS) {
+                        this.breakConnection(key, existingConn);
+                    } else if (!existingConn.isActive) {
+                        // It was closed logically (e.g. eviction), now remove physically
                         this.breakConnection(key, existingConn);
                     }
                 } else {
-                    // Check form
+                    // Check form conditions
                     if (dist < CONNECT_RADIUS) {
-                        this.formConnection(key, p1, p2);
+                        // Check Scanning & Role Availability
+                        // Logic: One must be scanning (Client) and find the other (Server)
+                        
+                        let initiator: BitchatPerson | null = null;
+                        
+                        // Try p1 as Client, p2 as Server
+                        if (p1.device.isScanning && 
+                            p1.device.connectionManager.canAcceptConnection(true) && 
+                            p2.device.connectionManager.canAcceptConnection(false)) {
+                            initiator = p1;
+                        }
+                        // Try p2 as Client, p1 as Server (only if not already connected)
+                        else if (p2.device.isScanning && 
+                                 p2.device.connectionManager.canAcceptConnection(true) && 
+                                 p1.device.connectionManager.canAcceptConnection(false)) {
+                            initiator = p2;
+                        }
+                        
+                        if (initiator) {
+                            this.formConnection(key, p1, p2, initiator.device);
+                        }
                     }
                 }
             }
@@ -160,8 +183,11 @@ export class SimulationEngine {
         return id1 < id2 ? `${id1}-${id2}` : `${id2}-${id1}`;
     }
     
-    private formConnection(key: string, p1: BitchatPerson, p2: BitchatPerson) {
-        const conn = new BitchatConnectionBLE(p1.device, p2.device);
+    private formConnection(key: string, p1: BitchatPerson, p2: BitchatPerson, initiator: any) { // Type 'any' used to bypass import needed, but it is BitchatDevice
+        // Determine role for constructor: endpointA, endpointB, initiator
+        // Note: BitchatConnection constructor just takes initiator ref
+        
+        const conn = new BitchatConnectionBLE(p1.device, p2.device, initiator);
         conn.setLogger(this.logManager);
         
         // Hook up visualization events

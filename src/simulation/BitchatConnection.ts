@@ -6,6 +6,7 @@ export abstract class BitchatConnection {
     id: string;
     endpointA: BitchatDevice;
     endpointB: BitchatDevice;
+    initiator: BitchatDevice; // Who started this connection (Client role)
     isActive: boolean = true;
     logger?: LogManager;
     
@@ -24,10 +25,11 @@ export abstract class BitchatConnection {
     }> = [];
     protected latencyMs: number = 400; // Default 400ms
 
-    constructor(endpointA: BitchatDevice, endpointB: BitchatDevice) {
+    constructor(endpointA: BitchatDevice, endpointB: BitchatDevice, initiator?: BitchatDevice) {
         this.id = `${endpointA.peerIDHex}-${endpointB.peerIDHex}`;
         this.endpointA = endpointA;
         this.endpointB = endpointB;
+        this.initiator = initiator || endpointA; // Default to A if not specified (legacy)
     }
     
     setLogger(logger: LogManager) {

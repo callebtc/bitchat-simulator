@@ -4,6 +4,7 @@ import { useSimulation } from '../context/SimulationContext';
 import { BitchatAppSimulator } from '../../simulation/AppLayer/BitchatAppSimulator';
 import { MovementMode } from '../../simulation/BitchatPerson';
 import { getPeerColor } from '../../utils/colorUtils';
+import { PowerMode } from '../../simulation/BitchatDevice';
 
 export const InspectorPanel: React.FC = () => {
     const { selectedId, selectionType, select } = useSelection();
@@ -81,14 +82,62 @@ export const InspectorPanel: React.FC = () => {
                                 className={`text-xs px-2 py-0.5 rounded border ${sim.isAnnouncing ? 'border-green-500 text-green-400' : 'border-red-500 text-red-400'}`}
                                 onClick={() => {
                                     sim.isAnnouncing = !sim.isAnnouncing;
-                                    // forceUpdate logic is usually implicit via ref checks in 3D, but here we might need state.
-                                    // But since we have the interval update, it will reflect in UI.
                                 }}
                             >
                                 {sim.isAnnouncing ? 'ON' : 'OFF'}
                             </button>
                         </div>
                     )}
+                    
+                    {/* Connection Settings */}
+                    <div className="mt-4 border-t border-gray-700 pt-2">
+                        <h3 className="font-bold text-gray-400 text-xs mb-2">BLE SETTINGS</h3>
+                        
+                        {/* Power Mode */}
+                        <div className="flex justify-between items-center mb-2 text-xs">
+                            <span className="opacity-60">Power:</span>
+                            <select 
+                                value={device.powerMode}
+                                onChange={(e) => device.setPowerMode(e.target.value as PowerMode)}
+                                className="bg-gray-800 border border-gray-600 rounded px-1 w-24"
+                            >
+                                {Object.values(PowerMode).map(mode => (
+                                    <option key={mode} value={mode}>{mode}</option>
+                                ))}
+                            </select>
+                        </div>
+                        
+                        {/* Limits */}
+                        <div className="grid grid-cols-3 gap-1 text-[10px] text-center mb-2">
+                            <div className="bg-gray-900 rounded p-1">
+                                <div className="opacity-50">CLIENTS</div>
+                                <input 
+                                    type="number" 
+                                    className="bg-transparent text-center w-full focus:outline-none"
+                                    value={device.connectionSettings.maxClients}
+                                    onChange={(e) => device.updateSettings({ maxClients: parseInt(e.target.value) || 0 })}
+                                />
+                            </div>
+                            <div className="bg-gray-900 rounded p-1">
+                                <div className="opacity-50">SERVERS</div>
+                                <input 
+                                    type="number" 
+                                    className="bg-transparent text-center w-full focus:outline-none"
+                                    value={device.connectionSettings.maxServers}
+                                    onChange={(e) => device.updateSettings({ maxServers: parseInt(e.target.value) || 0 })}
+                                />
+                            </div>
+                            <div className="bg-gray-900 rounded p-1">
+                                <div className="opacity-50">TOTAL</div>
+                                <input 
+                                    type="number" 
+                                    className="bg-transparent text-center w-full focus:outline-none"
+                                    value={device.connectionSettings.maxTotal}
+                                    onChange={(e) => device.updateSettings({ maxTotal: parseInt(e.target.value) || 0 })}
+                                />
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 <div className="mb-4 border-t border-gray-700 pt-2">

@@ -5,6 +5,10 @@ import { BitchatDevice } from './BitchatDevice';
 export class BitchatConnectionBLE extends BitchatConnection {
     // BLE specific properties (RSSI, etc.) can go here later
 
+    constructor(endpointA: BitchatDevice, endpointB: BitchatDevice, initiator?: BitchatDevice) {
+        super(endpointA, endpointB, initiator);
+    }
+
     send(packet: BitchatPacket, from: BitchatDevice): void {
         if (!this.isActive) return;
 
