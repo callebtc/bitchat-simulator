@@ -35,8 +35,8 @@ export class BitchatDevice {
     logger?: LogManager;
     
     // Power & Scanning
-    powerMode: PowerMode = PowerMode.NORMAL;
-    lastScanTime: number = 0;
+    powerMode: PowerMode = PowerMode.PERFORMANCE;
+    lastScanTime: number = -1;
     isScanning: boolean = false;
     
     // Limits
@@ -53,9 +53,6 @@ export class BitchatDevice {
         this.peerID = peerID;
         this.nickname = nickname;
         this.connectionManager = new ConnectionManager(this);
-        
-        // Randomize initial scan phase to avoid global sync
-        this.lastScanTime = -Math.random() * 30000;
     }
     
     setPowerMode(mode: PowerMode) {
@@ -93,6 +90,12 @@ export class BitchatDevice {
         // Scanning Logic
         this.isScanning = false;
         const interval = SCAN_INTERVALS[this.powerMode];
+        
+        if (this.lastScanTime === -1) {
+            // Jitter the first scan
+            this.lastScanTime = now - Math.random() * interval;
+        }
+
         if (now - this.lastScanTime > interval) {
             this.isScanning = true;
             this.lastScanTime = now;

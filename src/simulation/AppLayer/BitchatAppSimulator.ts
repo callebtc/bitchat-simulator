@@ -22,7 +22,7 @@ export class BitchatAppSimulator {
     peerManager: PeerManager;
     messages: ChatMessage[] = [];
     
-    private lastAnnounceTime: number = 0;
+    private lastAnnounceTime: number = -1;
     private seenPackets: Set<string> = new Set();
     private logger?: LogManager;
     
@@ -41,6 +41,11 @@ export class BitchatAppSimulator {
 
     tick(now: number) {
         if (!this.isAnnouncing) return;
+        
+        if (this.lastAnnounceTime === -1) {
+            // First tick: jitter the first announcement within the interval
+            this.lastAnnounceTime = now - Math.random() * ANNOUNCE_INTERVAL;
+        }
         
         if (now - this.lastAnnounceTime > ANNOUNCE_INTERVAL) {
             this.sendAnnounce();
