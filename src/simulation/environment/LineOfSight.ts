@@ -18,6 +18,63 @@ interface LineSegmentIntersection {
     building: Building;
 }
 
+export interface AttenuationStats {
+    total: number;
+    wallLoss: number;
+    materialLoss: number;
+    wallsCrossed: number;
+}
+
+/**
+ * Calculate the total signal attenuation along a line from A to B.
+ * Returns detailed stats.
+ */
+export function calculateLineAttenuationStats(
+    a: Point2D,
+    b: Point2D,
+    buildings: Building[]
+): AttenuationStats {
+    let wallLoss = 0;
+    let materialLoss = 0;
+    let wallsCrossed = 0;
+
+    for (const building of buildings) {
+        // Check containment first
+        const isAInside = pointInPolygon(a, building.vertices);
+        const isBInside = pointInPolygon(b, building.vertices);
+
+        // Same building optimization:
+        if (isAInside && isBInside) {
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            materialLoss += dist * ATTENUATION_CONFIG.BUILDING_INTERNAL_DB_M;
+            continue;
+        }
+
+        // Calculate intersection with walls
+        const intersection = getLinePolygonIntersection(a, b, building.vertices);
+        
+        if (intersection) {
+            const materialRate = ATTENUATION_CONFIG.BUILDING_DENSE_DB_M;
+            
+            const wLoss = intersection.wallsCrossed * ATTENUATION_CONFIG.WALL_LOSS;
+            const mLoss = intersection.distance * materialRate;
+            
+            wallLoss += wLoss;
+            materialLoss += mLoss;
+            wallsCrossed += intersection.wallsCrossed;
+        }
+    }
+
+    return {
+        total: wallLoss + materialLoss,
+        wallLoss,
+        materialLoss,
+        wallsCrossed
+    };
+}
+
 /**
  * Calculate the total signal attenuation along a line from A to B.
  * Sums up attenuation from all buildings intersected.
@@ -32,46 +89,7 @@ export function calculateLineAttenuation(
     b: Point2D,
     buildings: Building[]
 ): number {
-    let totalAttenuation = 0;
-
-    for (const building of buildings) {
-        // Check containment first
-        const isAInside = pointInPolygon(a, building.vertices);
-        const isBInside = pointInPolygon(b, building.vertices);
-
-        // Same building optimization:
-        // If both points are inside the SAME building, use low internal attenuation
-        // and assume no perimeter walls are crossed (signal stays inside).
-        if (isAInside && isBInside) {
-            const dx = b.x - a.x;
-            const dy = b.y - a.y;
-            const dist = Math.sqrt(dx * dx + dy * dy);
-            totalAttenuation += dist * ATTENUATION_CONFIG.BUILDING_INTERNAL_DB_M;
-            continue;
-        }
-
-        // Calculate intersection with walls
-        const intersection = getLinePolygonIntersection(a, b, building.vertices);
-        
-        if (intersection) {
-            // "Shell" Model:
-            // 1. Fixed loss per wall crossed
-            // 2. Distance-based loss through internal material
-            
-            // Determine material rate based on containment (though logic above handles A&B inside)
-            // If we are here, at least one point is outside (or passing through),
-            // so we treat the internal medium as "dense" relative to open air,
-            // or as "solid" per user request.
-            const materialRate = ATTENUATION_CONFIG.BUILDING_DENSE_DB_M;
-            
-            const wallLoss = intersection.wallsCrossed * ATTENUATION_CONFIG.WALL_LOSS;
-            const distLoss = intersection.distance * materialRate;
-            
-            totalAttenuation += wallLoss + distLoss;
-        }
-    }
-
-    return totalAttenuation;
+    return calculateLineAttenuationStats(a, b, buildings).total;
 }
 
 /**

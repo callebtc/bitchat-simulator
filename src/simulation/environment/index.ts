@@ -36,6 +36,7 @@ export {
 // Line of Sight
 export {
     calculateLineAttenuation,
+    calculateLineAttenuationStats,
     getLinePolygonIntersection,
     getDetailedIntersections,
     hasLineOfSight,

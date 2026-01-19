@@ -1,7 +1,7 @@
 import { BitchatConnection } from './BitchatConnection';
 import { BitchatPacket } from '../protocol/BitchatPacket';
 import { BitchatDevice } from './BitchatDevice';
-import { EnvironmentManager, calculateLineAttenuation, Point2D } from './environment';
+import { EnvironmentManager, calculateLineAttenuationStats, Point2D } from './environment';
 
 // RSSI Configuration - mutable so UI can modify
 export const RSSI_CONFIG = {
@@ -21,6 +21,16 @@ export const RSSI_CONFIG = {
     SMOOTHING_FACTOR: 0.3,
 };
 
+export interface RSSIStats {
+    distance: number;
+    pathLoss: number;
+    wallLoss: number;
+    materialLoss: number;
+    wallsCrossed: number;
+    totalLoss: number;
+    targetRSSI: number;
+}
+
 /** Update RSSI config at runtime */
 export function setRssiNoiseAmplitude(amplitude: number): void {
     RSSI_CONFIG.NOISE_AMPLITUDE = Math.max(0, Math.min(10, amplitude));
@@ -31,6 +41,9 @@ export class BitchatConnectionBLE extends BitchatConnection {
     rssi: number = RSSI_CONFIG.AT_1M;
     private rssiTarget: number = RSSI_CONFIG.AT_1M;
     private noisePhase: number = 0;
+    
+    // Detailed stats for UI
+    lastStats: RSSIStats | null = null;
     
     // Environment reference (set by SimulationEngine)
     environment: EnvironmentManager | null = null;
@@ -86,8 +99,14 @@ export class BitchatConnectionBLE extends BitchatConnection {
         const effectiveDistance = Math.max(distance, 0.1);
 
         // Free-space path loss: RSSI = RSSI_1m - 10 * n * log10(d)
-        let targetRSSI = RSSI_CONFIG.AT_1M - 
-            10 * RSSI_CONFIG.PATH_LOSS_EXPONENT * Math.log10(effectiveDistance);
+        // Path Loss (dB) = 10 * n * log10(d)
+        // We calculate this relative to 1m
+        const pathLoss = 10 * RSSI_CONFIG.PATH_LOSS_EXPONENT * Math.log10(effectiveDistance);
+        
+        let targetRSSI = RSSI_CONFIG.AT_1M - pathLoss;
+        let wallLoss = 0;
+        let materialLoss = 0;
+        let wallsCrossed = 0;
 
         // Material attenuation
         if (this.environment) {
@@ -95,13 +114,28 @@ export class BitchatConnectionBLE extends BitchatConnection {
             const pointB: Point2D = { x: posB.x, y: posB.y };
             
             const buildingsInPath = this.environment.getBuildingsInPath(pointA, pointB);
-            const materialAttenuation = calculateLineAttenuation(pointA, pointB, buildingsInPath);
+            const stats = calculateLineAttenuationStats(pointA, pointB, buildingsInPath);
             
-            targetRSSI -= materialAttenuation;
+            wallLoss = stats.wallLoss;
+            materialLoss = stats.materialLoss;
+            wallsCrossed = stats.wallsCrossed;
+            
+            targetRSSI -= stats.total;
         }
 
         // Store target RSSI
         this.rssiTarget = targetRSSI;
+        
+        // Store detailed stats
+        this.lastStats = {
+            distance: effectiveDistance,
+            pathLoss,
+            wallLoss,
+            materialLoss,
+            wallsCrossed,
+            totalLoss: pathLoss + wallLoss + materialLoss,
+            targetRSSI
+        };
 
         // Add noise
         this.noisePhase += (now * 0.001) * (Math.PI * 2 / (RSSI_CONFIG.NOISE_PERIOD / 1000));

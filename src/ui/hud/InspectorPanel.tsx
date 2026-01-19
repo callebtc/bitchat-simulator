@@ -450,6 +450,36 @@ export const InspectorPanel: React.FC = () => {
                             <span>Threshold: {RSSI_CONFIG.DISCONNECT_THRESHOLD}dBm</span>
                             <span>Max: {RSSI_CONFIG.MAX_RSSI}dBm</span>
                         </div>
+
+                        {/* Detailed Stats */}
+                        {isBLE && conn.lastStats && (
+                            <div className="mt-3 pt-2 border-t border-gray-800 space-y-1">
+                                <div className="flex justify-between text-[10px]">
+                                    <span className="text-gray-500">Distance</span>
+                                    <span className="font-mono text-gray-300">{conn.lastStats.distance.toFixed(1)}m</span>
+                                </div>
+                                <div className="flex justify-between text-[10px]">
+                                    <span className="text-gray-500">Free Space Loss</span>
+                                    <span className="font-mono text-gray-400">-{conn.lastStats.pathLoss.toFixed(1)}dB</span>
+                                </div>
+                                {conn.lastStats.wallsCrossed > 0 && (
+                                    <div className="flex justify-between text-[10px]">
+                                        <span className="text-gray-500">Walls ({conn.lastStats.wallsCrossed})</span>
+                                        <span className="font-mono text-red-400">-{conn.lastStats.wallLoss.toFixed(1)}dB</span>
+                                    </div>
+                                )}
+                                {conn.lastStats.materialLoss > 0.1 && (
+                                    <div className="flex justify-between text-[10px]">
+                                        <span className="text-gray-500">Material Abs.</span>
+                                        <span className="font-mono text-orange-400">-{conn.lastStats.materialLoss.toFixed(1)}dB</span>
+                                    </div>
+                                )}
+                                <div className="flex justify-between text-[10px] pt-1 mt-1 border-t border-gray-800/50">
+                                    <span className="text-gray-400">Target RSSI</span>
+                                    <span className="font-mono text-white">{conn.lastStats.targetRSSI.toFixed(1)}dBm</span>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
 
