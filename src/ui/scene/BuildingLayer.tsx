@@ -86,6 +86,8 @@ const BuildingMesh: React.FC<BuildingMeshProps> = ({ building }) => {
 export const BuildingLayer: React.FC = () => {
     const engine = useSimulation();
     const [buildings, setBuildings] = useState<Building[]>([]);
+    // Generation counter to force React to recreate components when map changes
+    const [generation, setGeneration] = useState(0);
 
     useEffect(() => {
         // Get initial buildings
@@ -94,10 +96,13 @@ export const BuildingLayer: React.FC = () => {
         // Listen for environment changes
         const handleEnvironmentLoaded = () => {
             setBuildings(engine.environment.getBuildings());
+            // Increment generation to force new keys and component recreation
+            setGeneration(g => g + 1);
         };
 
         const handleReset = () => {
             setBuildings([]);
+            setGeneration(g => g + 1);
         };
 
         engine.events.on('environment_loaded', handleEnvironmentLoaded);
@@ -131,7 +136,7 @@ export const BuildingLayer: React.FC = () => {
     return (
         <group name="building-layer">
             {visibleBuildings.map(building => (
-                <BuildingMesh key={building.id} building={building} />
+                <BuildingMesh key={`${generation}-${building.id}`} building={building} />
             ))}
         </group>
     );
