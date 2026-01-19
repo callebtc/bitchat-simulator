@@ -23,6 +23,7 @@ export type {
 
 // Environment Manager
 export { EnvironmentManager } from './EnvironmentManager';
+export type { MovementResult } from './EnvironmentManager';
 
 // OSM Fetcher
 export {
@@ -38,4 +39,10 @@ export {
     getLinePolygonIntersection,
     getDetailedIntersections,
     hasLineOfSight,
+    getFirstIntersection,
+    getEdgeNormal,
+    pointInPolygon,
+    projectOntoSurface,
 } from './LineOfSight';
+
+export type { CollisionResult } from './LineOfSight';

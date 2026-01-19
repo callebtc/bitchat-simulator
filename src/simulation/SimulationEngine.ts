@@ -31,6 +31,8 @@ export class SimulationEngine {
 
     addPerson(person: BitchatPerson) {
         person.setLogger(this.logManager);
+        // Set environment reference for collision detection
+        person.environment = this.environment;
         this.people.set(person.id, person);
         this.spatial.addPerson(person);
         this.events.emit('person_added', person);

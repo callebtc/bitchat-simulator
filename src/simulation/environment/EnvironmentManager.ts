@@ -15,6 +15,18 @@ import {
     calculateBounds,
 } from './types';
 
+import { getFirstIntersection, projectOntoSurface } from './LineOfSight';
+
+/** Result of movement resolution with collision detection */
+export interface MovementResult {
+    /** Final position after collision resolution */
+    position: Point2D;
+    /** Whether movement was blocked by a building */
+    blocked: boolean;
+    /** Remaining velocity after sliding (if applicable) */
+    velocity?: Point2D;
+}
+
 export class EnvironmentManager {
     private buildings: Building[] = [];
     private bounds: EnvironmentBounds | null = null;
@@ -170,6 +182,92 @@ export class EnvironmentManager {
             }
         }
         return null;
+    }
+
+    /**
+     * Resolve movement from one point to another, handling building collisions.
+     * If the path intersects a building, the movement slides along the wall.
+     * 
+     * @param from - Starting position
+     * @param to - Desired ending position
+     * @param maxIterations - Maximum slide iterations to prevent infinite loops
+     * @returns The resolved position and whether movement was blocked
+     */
+    resolveMovement(from: Point2D, to: Point2D, maxIterations: number = 3): MovementResult {
+        // No buildings = no collision
+        if (this.buildings.length === 0) {
+            return { position: to, blocked: false };
+        }
+
+        let currentPos = { ...from };
+        let targetPos = { ...to };
+        let blocked = false;
+        
+        // Small offset to prevent getting stuck on walls
+        const EPSILON = 0.01;
+
+        for (let iteration = 0; iteration < maxIterations; iteration++) {
+            // Get buildings that might be in the path
+            const candidates = this.getBuildingsInPath(currentPos, targetPos);
+            
+            if (candidates.length === 0) {
+                // No buildings in path, move freely
+                return { position: targetPos, blocked };
+            }
+
+            // Find first intersection
+            const collision = getFirstIntersection(currentPos, targetPos, candidates);
+
+            if (!collision) {
+                // No actual collision, move freely
+                return { position: targetPos, blocked };
+            }
+
+            blocked = true;
+
+            // Move to just before the collision point
+            // Normal points outward from the building, so we add it to stay outside
+            const collisionPoint: Point2D = {
+                x: collision.point.x + collision.normal.x * EPSILON,
+                y: collision.point.y + collision.normal.y * EPSILON,
+            };
+
+            // Calculate remaining movement vector
+            const remainingVec: Point2D = {
+                x: targetPos.x - collision.point.x,
+                y: targetPos.y - collision.point.y,
+            };
+
+            // Project remaining movement onto the wall (slide)
+            const slideVec = projectOntoSurface(remainingVec, collision.normal);
+
+            // Calculate new target position after sliding
+            const slideTarget: Point2D = {
+                x: collisionPoint.x + slideVec.x,
+                y: collisionPoint.y + slideVec.y,
+            };
+
+            // If slide movement is negligible, stop here
+            const slideDist = Math.sqrt(slideVec.x * slideVec.x + slideVec.y * slideVec.y);
+            if (slideDist < EPSILON) {
+                return { 
+                    position: collisionPoint, 
+                    blocked: true,
+                    velocity: { x: 0, y: 0 },
+                };
+            }
+
+            // Update for next iteration (check if slide path also hits something)
+            currentPos = collisionPoint;
+            targetPos = slideTarget;
+        }
+
+        // Max iterations reached, return current position
+        return { 
+            position: currentPos, 
+            blocked: true,
+            velocity: { x: 0, y: 0 },
+        };
     }
 
     /**

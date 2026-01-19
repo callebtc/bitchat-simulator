@@ -1,6 +1,7 @@
 import { BitchatDevice } from './BitchatDevice';
 import { Point, Vector2 } from './types';
 import { LogManager } from './LogManager';
+import { EnvironmentManager } from './environment';
 
 export enum MovementMode {
     STILL = 'STILL',
@@ -14,6 +15,9 @@ export class BitchatPerson {
     velocity: Vector2;
     device: BitchatDevice;
     logger?: LogManager;
+    
+    /** Environment reference for collision detection (set by SimulationEngine) */
+    environment?: EnvironmentManager;
     
     // Movement
     mode: MovementMode = MovementMode.STILL;
@@ -67,8 +71,30 @@ export class BitchatPerson {
             this.updateTargetSeek(dt);
         }
 
-        this.position.x += this.velocity.x * dt;
-        this.position.y += this.velocity.y * dt;
+        // Calculate proposed new position
+        const newX = this.position.x + this.velocity.x * dt;
+        const newY = this.position.y + this.velocity.y * dt;
+
+        // Apply collision detection if environment exists and has buildings
+        if (this.environment && this.environment.getBuildingCount() > 0) {
+            const from = { x: this.position.x, y: this.position.y };
+            const to = { x: newX, y: newY };
+            
+            const result = this.environment.resolveMovement(from, to);
+            
+            this.position.x = result.position.x;
+            this.position.y = result.position.y;
+            
+            // If blocked while seeking target, adjust wander angle for random walk
+            if (result.blocked && this.mode === MovementMode.RANDOM_WALK) {
+                // Turn away from wall
+                this.wanderAngle += Math.PI * 0.5 + Math.random() * Math.PI;
+            }
+        } else {
+            // No collision detection, move freely
+            this.position.x = newX;
+            this.position.y = newY;
+        }
     }
     
     private updateRandomWalk(_dt: number) {
