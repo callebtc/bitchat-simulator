@@ -5,9 +5,11 @@ import { BitchatAppSimulator } from '../../simulation/AppLayer/BitchatAppSimulat
 import { MovementMode } from '../../simulation/BitchatPerson';
 import { getPeerColor } from '../../utils/colorUtils';
 import { PowerMode } from '../../simulation/BitchatDevice';
+import { useLayout } from '../context/LayoutContext';
 
 export const InspectorPanel: React.FC = () => {
     const { selectedId, selectionType, select, setChatRecipientId } = useSelection();
+    const { bottomPanelHeight } = useLayout();
     const engine = useSimulation();
     const [, forceUpdate] = useState(0);
 
@@ -39,7 +41,10 @@ export const InspectorPanel: React.FC = () => {
         const knownPeers = sim?.peerManager.getAllPeers() || [];
 
         return (
-            <div className="absolute top-4 right-4 w-80 bg-black/90 text-white p-4 rounded backdrop-blur-md border border-gray-700 max-h-[90vh] overflow-y-auto shadow-xl font-mono text-sm pointer-events-auto">
+            <div 
+                className="absolute top-4 right-4 w-80 bg-black/90 text-white p-4 rounded backdrop-blur-md border border-gray-700 overflow-y-auto shadow-xl font-mono text-sm pointer-events-auto"
+                style={{ maxHeight: `calc(100vh - ${bottomPanelHeight + 32}px)` }}
+            >
                 <button 
                     className="absolute top-2 right-2 text-gray-500 hover:text-white transition-colors"
                     onClick={() => select(null, null)}

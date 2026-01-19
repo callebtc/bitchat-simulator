@@ -9,6 +9,7 @@ export const ChatPanel: React.FC = () => {
     const engine = useSimulation();
     const [messages, setMessages] = useState<ChatMessage[]>([]);
     const [inputText, setInputText] = useState('');
+    const [autoScroll, setAutoScroll] = useState(true);
     const bottomRef = useRef<HTMLDivElement>(null);
 
     const person = selectedId ? engine.getPerson(selectedId) : null;
@@ -28,10 +29,10 @@ export const ChatPanel: React.FC = () => {
     }, [sim, messages.length]);
 
     useEffect(() => {
-        if (bottomRef.current) {
+        if (autoScroll && bottomRef.current) {
             bottomRef.current.scrollIntoView({ behavior: 'smooth' });
         }
-    }, [messages]);
+    }, [messages, autoScroll]);
 
     const handleSend = () => {
         if (!sim || !inputText.trim()) return;
@@ -45,23 +46,39 @@ export const ChatPanel: React.FC = () => {
     return (
         <div className="flex flex-col h-full bg-black/90 font-mono text-xs">
             {/* Header / Target */}
-            <div className="flex items-center gap-2 p-2 border-b border-gray-700 bg-gray-900/50">
-                <span className="text-gray-400">To:</span>
-                {chatRecipientId ? (
-                    <div className="flex items-center gap-1 bg-blue-900/50 px-2 py-0.5 rounded border border-blue-700/50">
-                        <span style={{ color: getPeerColor(chatRecipientId) }}>
-                            {chatRecipientId.substring(0,8)}...
-                        </span>
-                        <button 
-                            onClick={() => setChatRecipientId(null)}
-                            className="ml-1 text-red-400 hover:text-red-300 font-bold"
-                        >
-                            ✕
-                        </button>
-                    </div>
-                ) : (
-                    <span className="text-cyan-400 font-bold">[BROADCAST]</span>
-                )}
+            <div className="flex justify-between items-center p-2 border-b border-gray-700 bg-gray-900/50">
+                <div className="flex items-center gap-2">
+                    <span style={{ color: getPeerColor(person?.device.peerIDHex || '') }} className="font-bold">
+                        [{person?.device.nickname || 'Unknown'}]
+                    </span>
+                    <span className="text-gray-400">To:</span>
+                    {chatRecipientId ? (
+                        <div className="flex items-center gap-1 bg-blue-900/50 px-2 py-0.5 rounded border border-blue-700/50">
+                            <span style={{ color: getPeerColor(chatRecipientId) }}>
+                                {chatRecipientId.substring(0,8)}...
+                            </span>
+                            <button 
+                                onClick={() => setChatRecipientId(null)}
+                                className="ml-1 text-red-400 hover:text-red-300 font-bold"
+                            >
+                                ✕
+                            </button>
+                        </div>
+                    ) : (
+                        <span className="text-cyan-400 font-bold">[BROADCAST]</span>
+                    )}
+                </div>
+                
+                <div className="flex gap-2 items-center">
+                     <label className="flex items-center gap-1 cursor-pointer select-none text-white">
+                        <input 
+                            type="checkbox" 
+                            checked={autoScroll} 
+                            onChange={e => setAutoScroll(e.target.checked)}
+                        />
+                        <span>Auto-scroll</span>
+                    </label>
+                </div>
             </div>
 
             {/* Message History */}

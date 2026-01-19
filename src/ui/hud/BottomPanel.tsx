@@ -1,12 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { LogView } from './LogView';
 import { ChatPanel } from './ChatPanel';
 import { useSelection } from '../context/SelectionContext';
+import { useLayout } from '../context/LayoutContext';
 
 export const BottomPanel: React.FC = () => {
     const { selectedId } = useSelection();
+    const { setBottomPanelHeight } = useLayout();
     const [isCollapsed, setIsCollapsed] = useState(false);
     const [activeTab, setActiveTab] = useState<'LOGS' | 'CHAT'>('LOGS');
+
+    useEffect(() => {
+        setBottomPanelHeight(isCollapsed ? 32 : 256);
+    }, [isCollapsed, setBottomPanelHeight]);
 
     // Auto-switch to CHAT when a node is selected if it wasn't already?
     // Or just let user switch.

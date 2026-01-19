@@ -8,6 +8,8 @@ import { BottomPanel } from './hud/BottomPanel';
 
 import { setupDemo } from '../simulation/DemoSetup';
 
+import { LayoutProvider } from './context/LayoutContext';
+
 const SimulationController = () => {
     const engine = useSimulation();
     
@@ -24,15 +26,17 @@ const SimulationController = () => {
 
 function App() {
   return (
-    <SimulationProvider>
-        <SelectionProvider>
-            <SimulationController />
-            <Scene />
-            <MainControlPanel />
-            <InspectorPanel />
-            <BottomPanel />
-        </SelectionProvider>
-    </SimulationProvider>
+    <LayoutProvider>
+        <SimulationProvider>
+            <SelectionProvider>
+                <SimulationController />
+                <Scene />
+                <MainControlPanel />
+                <InspectorPanel />
+                <BottomPanel />
+            </SelectionProvider>
+        </SimulationProvider>
+    </LayoutProvider>
   );
 }
 
