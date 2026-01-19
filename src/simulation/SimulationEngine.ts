@@ -92,6 +92,11 @@ export class SimulationEngine {
             person.device.tick(now);
         });
 
+        // Update Connections (Latency)
+        this.globalConnections.forEach(conn => {
+            conn.update(now);
+        });
+
         this.updateConnectivity();
         
         this.events.emit('tick', this.people);

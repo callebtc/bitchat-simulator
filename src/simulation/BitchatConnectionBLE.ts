@@ -8,19 +8,26 @@ export class BitchatConnectionBLE extends BitchatConnection {
     send(packet: BitchatPacket, from: BitchatDevice): void {
         if (!this.isActive) return;
 
-        const target = this.getOtherParty(from);
+        // const target = this.getOtherParty(from);
         
         this.packetsSent++;
         
-        // Visualize
+        // Visualize immediately (so we see it leave the sender)
         if (this.onPacketSent) {
             this.onPacketSent(packet, from);
         }
 
-        // Simulate immediate delivery for now
-        // In real sim, we might add a delay or drop chance
-        target.receivePacket(packet, from);
+        // Simulate network latency
+        // Use performance.now() which is what the engine uses
+        const now = performance.now();
+        this.packetQueue.push({
+            packet,
+            from,
+            deliverAt: now + this.latencyMs
+        });
         
-        this.packetsReceived++;
+        // Removed immediate delivery:
+        // target.receivePacket(packet, from);
+        // this.packetsReceived++; // Will be incremented in update() on delivery
     }
 }
