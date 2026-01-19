@@ -6,7 +6,7 @@ export const Controls: React.FC = () => {
     const engine = useSimulation();
 
     return (
-        <div className="absolute bottom-4 left-4 bg-black/80 p-2 rounded flex gap-2 backdrop-blur-sm border border-gray-700">
+        <div className="absolute bottom-10 left-4 bg-black/80 p-2 rounded flex gap-2 backdrop-blur-sm border border-gray-700 pointer-events-auto">
             <button 
                 className="bg-cyan-700 hover:bg-cyan-600 text-white px-3 py-1 rounded text-sm transition-colors"
                 onClick={() => addRandomNode(engine)}

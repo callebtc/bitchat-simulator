@@ -6,6 +6,9 @@ export abstract class BitchatConnection {
     endpointA: BitchatDevice;
     endpointB: BitchatDevice;
     isActive: boolean = true;
+    
+    // Visualization callbacks
+    onPacketSent?: (packet: BitchatPacket, from: BitchatDevice) => void;
 
     constructor(endpointA: BitchatDevice, endpointB: BitchatDevice) {
         this.id = `${endpointA.peerIDHex}-${endpointB.peerIDHex}`;

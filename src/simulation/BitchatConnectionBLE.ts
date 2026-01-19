@@ -10,6 +10,11 @@ export class BitchatConnectionBLE extends BitchatConnection {
 
         const target = this.getOtherParty(from);
         
+        // Visualize
+        if (this.onPacketSent) {
+            this.onPacketSent(packet, from);
+        }
+
         // Simulate immediate delivery for now
         // In real sim, we might add a delay or drop chance
         target.receivePacket(packet, from);

@@ -19,6 +19,10 @@ const SimulationController = () => {
     return null;
 };
 
+import { Terminal } from './hud/Terminal';
+
+// ... (previous imports)
+
 function App() {
   return (
     <SimulationProvider>
@@ -31,6 +35,7 @@ function App() {
             </div>
             <Controls />
             <InspectorPanel />
+            <Terminal />
         </SelectionProvider>
     </SimulationProvider>
   );

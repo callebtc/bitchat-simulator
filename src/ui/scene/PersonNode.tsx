@@ -11,9 +11,9 @@ interface PersonNodeProps {
 
 export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     const engine = useSimulation();
-    const { selectedId, setSelectedId } = useSelection();
+    const { selectedId, select, setDragging } = useSelection();
     const meshRef = useRef<THREE.Group>(null);
-    const [isDragging, setIsDragging] = useState(false);
+    const [localDrag, setLocalDrag] = useState(false);
     
     // Initial color
     const baseColor = useMemo(() => new THREE.Color().setHSL(Math.random(), 0.7, 0.5), []);
@@ -37,35 +37,29 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     
     const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
         e.stopPropagation();
-        setSelectedId(id);
-        setIsDragging(true);
+        select(id, 'node');
+        setLocalDrag(true);
+        setDragging(true);
         const person = engine.getPerson(id);
-        if (person) person.setVelocity({x: 0, y: 0}); // Stop moving
+        if (person) person.setVelocity({x: 0, y: 0}); 
         
-        // Capture pointer? ThreeJS handles this usually via onPointerMove on object?
-        // No, for drag we need to listen on global or plane.
-        // Simple hack: Set global dragging state in context? 
-        // Or use Drei's <DragControls> wrapper?
-        // Or just rely on `onPointerMove` on the mesh? (Only works if cursor stays on mesh)
-        // Correct way is to capture pointer.
         (e.target as Element).setPointerCapture(e.pointerId);
     };
     
     const handlePointerUp = (e: ThreeEvent<PointerEvent>) => {
         e.stopPropagation();
-        setIsDragging(false);
+        setLocalDrag(false);
+        setDragging(false);
         (e.target as Element).releasePointerCapture(e.pointerId);
     };
     
     const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
-        if (isDragging) {
+        if (localDrag) {
+
             e.stopPropagation();
-            // Convert movement?
-            // e.unproject? 
-            // e.point is the intersection point in 3D world space.
-            // This is exactly what we want!
             const person = engine.getPerson(id);
             if (person) {
+                // Update Sim State
                 person.position.x = e.point.x;
                 person.position.y = e.point.y;
                 person.setVelocity({x:0, y:0});

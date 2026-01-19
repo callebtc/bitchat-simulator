@@ -4,6 +4,8 @@ import { BitchatPerson } from './BitchatPerson';
 import { BitchatAppSimulator } from './AppLayer/BitchatAppSimulator';
 
 export function setupDemo(engine: SimulationEngine, count: number = 5) {
+    engine.reset();
+    
     for(let i=0; i<count; i++) {
         const d = BitchatDevice.createRandom();
         d.nickname = `User-${d.peerIDHex.substring(0,4)}`;
