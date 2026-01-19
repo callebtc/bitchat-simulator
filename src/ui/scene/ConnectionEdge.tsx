@@ -50,7 +50,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
     const segmentBRef = useRef<any>(null); // Segment B->Mid
     
     const { selectedId, select } = useSelection();
-    const { showAnnouncePackets } = useVisualization();
+    const { showAnnouncePackets, highlightOwnMesh } = useVisualization();
     const engine = useSimulation();
     
     // Packet Visualization State
@@ -76,7 +76,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
     let knownBtoA = false; // B knows A
     let isUnknownMuted = false;
 
-    if (selectedId && !isConnectionSelected) {
+    if (selectedId && !isConnectionSelected && highlightOwnMesh) {
         // If a node is selected, we want to visualize ITS graph
         // (unless we selected the connection itself)
         const selectedPerson = engine.getPerson(selectedId);
@@ -99,7 +99,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
         }
     }
 
-    const isDimmed = (selectedId !== null && !isHighlighted && !isGraphMode) || isUnknownMuted;
+    const isDimmed = highlightOwnMesh && ((selectedId !== null && !isHighlighted && !isGraphMode) || isUnknownMuted);
 
     // Resolve selected peer hex ID if a person is selected
     let selectedPeerIDHex: string | undefined;

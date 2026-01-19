@@ -15,7 +15,7 @@ interface PersonNodeProps {
 export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     const engine = useSimulation();
     const { selectedId, select, setDragging, highlightedId, setHighlightedId } = useSelection();
-    const { showAnnouncePackets } = useVisualization();
+    const { showAnnouncePackets, highlightOwnMesh } = useVisualization();
     const meshRef = useRef<THREE.Group>(null);
     
     // Data
@@ -26,7 +26,7 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     const isSelected = selectedId === id;
     const isHighlighted = highlightedId === peerIdHex;
     const isSomethingSelected = selectedId !== null;
-    const isDimmed = isSomethingSelected && !isSelected && !isHighlighted;
+    const isDimmed = highlightOwnMesh && isSomethingSelected && !isSelected && !isHighlighted;
     
     // Color (Use Peer ID)
     const color = useMemo(() => getPeerColor(peerIdHex), [peerIdHex]);

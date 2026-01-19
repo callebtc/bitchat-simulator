@@ -8,6 +8,7 @@ import { PowerMode } from '../../simulation/BitchatDevice';
 import { useLayout } from '../context/LayoutContext';
 import { usePersistedState } from '../../utils/usePersistedState';
 import { BitchatConnectionBLE, RSSI_CONFIG, setRssiNoiseAmplitude } from '../../simulation/BitchatConnectionBLE';
+import { useVisualization } from '../context/VisualizationContext';
 
 // Helper for Collapsible Sections
 const CollapsibleSection: React.FC<{ 
@@ -153,6 +154,7 @@ const PanelWrapper: React.FC<{ children: React.ReactNode; title: string; subtitl
 
 export const InspectorPanel: React.FC = () => {
     const { selectedId, selectionType, select, setChatRecipientId, setHighlightedId } = useSelection();
+    const { highlightOwnMesh, setHighlightOwnMesh } = useVisualization();
     const { bottomPanelHeight } = useLayout();
     const engine = useSimulation();
     const [, forceUpdate] = useState(0);
@@ -212,6 +214,27 @@ export const InspectorPanel: React.FC = () => {
                         Walking to random locations
                     </div>
                 )}
+
+                {/* Visualization Section */}
+                <CollapsibleSection title="VISUALIZATION" accentColor="text-purple-500" persistenceKey="inspector_viz">
+                     <div className="flex items-center justify-between bg-gray-900/30 px-2 py-1.5 rounded border border-gray-800">
+                        <label className="text-[10px] text-gray-400 flex items-center gap-1.5 cursor-pointer select-none">
+                            <span className="uppercase tracking-wider">Highlight Own Mesh</span>
+                        </label>
+                        <button
+                            onClick={() => setHighlightOwnMesh(!highlightOwnMesh)}
+                            className={`relative w-8 h-4 rounded-full transition-colors ${
+                                highlightOwnMesh ? 'bg-purple-600' : 'bg-gray-700'
+                            }`}
+                        >
+                            <div
+                                className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                                    highlightOwnMesh ? 'translate-x-4' : 'translate-x-0.5'
+                                }`}
+                            />
+                        </button>
+                    </div>
+                </CollapsibleSection>
 
                 {/* Simulation Settings */}
                 <CollapsibleSection title="DEVICE STATE" accentColor="text-cyan-600" persistenceKey="inspector_device_state">
