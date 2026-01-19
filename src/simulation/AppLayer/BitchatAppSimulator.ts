@@ -3,6 +3,7 @@ import { PeerManager } from './PeerManager';
 import { BitchatPacket, MessageType, createPacket, SpecialRecipients, calculatePacketHash } from '../../protocol/BitchatPacket';
 import { TLV, TLVType } from '../../protocol/TLV';
 import { LogManager } from '../LogManager';
+import { getPeerColor } from '../../utils/colorUtils';
 
 const ANNOUNCE_INTERVAL = 5000; // 5 seconds
 const MAX_TTL = 7;
@@ -38,7 +39,8 @@ export class BitchatAppSimulator {
 
     private log(message: string, details?: any, level: 'INFO'|'DEBUG' = 'INFO') {
         if (this.logger) {
-            this.logger.log(level, 'PACKET', message, this.device.peerIDHex, details);
+            const hexId = this.device.peerIDHex;
+            this.logger.log(level, 'PACKET', message, hexId, details, getPeerColor(hexId));
         }
     }
 

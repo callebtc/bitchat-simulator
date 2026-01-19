@@ -130,12 +130,23 @@ export const LogPanel: React.FC = () => {
                 <div className="flex-1 overflow-y-auto p-2 space-y-1">
                     {filteredLogs.map(log => (
                         <div key={log.id} className="flex gap-2 hover:bg-white/5">
-                            <span className="opacity-50 min-w-[60px]">
-                                {new Date(log.timestamp).toLocaleTimeString().split(' ')[0]}
+                        <span className="opacity-50 min-w-[60px]">
+                            {new Date(log.timestamp).toLocaleTimeString().split(' ')[0]}
+                        </span>
+                        
+                        {log.entityId && log.category === 'PACKET' && (
+                            <span 
+                                className="font-mono font-bold min-w-[70px]"
+                                style={{ color: log.color }}
+                            >
+                                {log.entityId.substring(0, 6)}:
                             </span>
-                            <span className={`min-w-[80px] font-bold ${getCategoryColor(log.category)}`}>
-                                [{log.category}]
-                            </span>
+                        )}
+                        
+                        <span className={`min-w-[80px] font-bold ${getCategoryColor(log.category)}`}>
+                            [{log.category}]
+                        </span>
+
                             <span className="flex-1 break-all">
                                 {log.message}
                                 {log.details && (

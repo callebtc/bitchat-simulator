@@ -1,13 +1,17 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { useSelection } from '../context/SelectionContext';
 import { useSimulation } from '../context/SimulationContext';
 import { BitchatAppSimulator } from '../../simulation/AppLayer/BitchatAppSimulator';
 import { MovementMode } from '../../simulation/BitchatPerson';
+import { getPeerColor } from '../../utils/colorUtils';
 
 export const InspectorPanel: React.FC = () => {
     const { selectedId, selectionType, select } = useSelection();
     const engine = useSimulation();
     const [, forceUpdate] = useState(0);
+
+    // Derived color
+    const headerColor = useMemo(() => selectedId ? getPeerColor(selectedId) : 'white', [selectedId]);
 
     useEffect(() => {
         if (!selectedId) return;
@@ -41,11 +45,11 @@ export const InspectorPanel: React.FC = () => {
                 >
                     ✕
                 </button>
-                <h2 className="text-lg font-bold text-cyan-400 mb-2">{device.nickname}</h2>
+                <h2 className="text-lg font-bold mb-2" style={{ color: headerColor }}>{device.nickname}</h2>
                 <div className="mb-4 space-y-1">
                     <div className="flex justify-between">
                         <span className="opacity-60">ID:</span>
-                        <span>{device.peerIDHex.substring(0,8)}...</span>
+                        <span className="font-mono text-xs">{device.peerIDHex}</span>
                     </div>
                     <div className="flex justify-between">
                         <span className="opacity-60">Pos:</span>
@@ -92,7 +96,7 @@ export const InspectorPanel: React.FC = () => {
                     <ul className="space-y-1 pl-2">
                         {conns.map(p => (
                             <li key={p.peerIDHex} className="flex justify-between text-xs">
-                                <span>{p.nickname}</span>
+                                <span style={{ color: getPeerColor(p.peerIDHex) }}>{p.nickname}</span>
                                 <span className="opacity-50">{p.peerIDHex.substring(0,6)}</span>
                             </li>
                         ))}
@@ -106,8 +110,11 @@ export const InspectorPanel: React.FC = () => {
                         {knownPeers.map(p => (
                             <li key={p.id} className="text-xs">
                                 <div className="flex justify-between">
-                                    <span className={p.isDirect ? 'text-green-300' : 'text-orange-300'}>
-                                        {p.nickname} {p.isDirect ? '(Dir)' : '(Rtd)'}
+                                    <span>
+                                        <span style={{ color: getPeerColor(p.id) }}>{p.nickname}</span>
+                                        <span className={`ml-2 text-[10px] ${p.isDirect ? 'text-green-500' : 'text-orange-500'}`}>
+                                            {p.isDirect ? '(Dir)' : '(Rtd)'}
+                                        </span>
                                     </span>
                                     <span>{((Date.now() - p.lastSeen)/1000).toFixed(0)}s ago</span>
                                 </div>

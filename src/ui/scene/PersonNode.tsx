@@ -4,6 +4,7 @@ import { useSimulation } from '../context/SimulationContext';
 import { useSelection } from '../context/SelectionContext';
 import * as THREE from 'three';
 import { Text } from '@react-three/drei';
+import { getPeerColor } from '../../utils/colorUtils';
 
 interface PersonNodeProps {
     id: string;
@@ -14,42 +15,52 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     const { selectedId, select, setDragging } = useSelection();
     const meshRef = useRef<THREE.Group>(null);
     
-    // Initial color
-    const baseColor = useMemo(() => new THREE.Color().setHSL(Math.random(), 0.7, 0.5), []);
+    // Data
+    const person = engine.getPerson(id);
+    const peerIdHex = person?.device.peerIDHex || id; // Fallback
     
+    // Derived state
     const isSelected = selectedId === id;
-
+    const isSomethingSelected = selectedId !== null;
+    const isDimmed = isSomethingSelected && !isSelected;
+    
+    // Color (Use Peer ID)
+    const color = useMemo(() => getPeerColor(peerIdHex), [peerIdHex]);
+    
     useFrame(() => {
-        if (!meshRef.current) return;
+        if (!meshRef.current || !person) return;
         
-        const person = engine.getPerson(id);
-        if (person) {
-            meshRef.current.position.x = person.position.x;
-            meshRef.current.position.y = person.position.y;
-        }
+        meshRef.current.position.x = person.position.x;
+        meshRef.current.position.y = person.position.y;
     });
     
     const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
-        e.stopPropagation(); // Don't trigger background click
+        e.stopPropagation(); 
         select(id, 'node');
         setDragging(true);
         
-        const person = engine.getPerson(id);
         if (person) {
             person.setVelocity({x: 0, y: 0}); 
-            // Also stop random walk or target move? We'll handle that in Person logic update later
         }
     };
 
     return (
-        <group ref={meshRef}>
+        <group ref={meshRef} scale={isSelected ? 1.2 : 1}>
             <mesh onPointerDown={handlePointerDown}>
                 <circleGeometry args={[5, 32]} />
-                <meshBasicMaterial color={isSelected ? 'white' : baseColor} />
+                <meshBasicMaterial 
+                    color={color} 
+                    transparent
+                    opacity={isDimmed ? 0.4 : 1.0}
+                />
             </mesh>
             <mesh>
                  <ringGeometry args={[5, isSelected ? 6 : 5.2, 32]} />
-                 <meshBasicMaterial color={isSelected ? 'cyan' : 'black'} />
+                 <meshBasicMaterial 
+                    color={isSelected ? 'white' : 'black'} 
+                    transparent
+                    opacity={isDimmed ? 0.4 : 1.0}
+                 />
             </mesh>
             <Text 
                 position={[0, -8, 0]} 
@@ -57,8 +68,9 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
                 color="white"
                 anchorX="center"
                 anchorY="top"
+                fillOpacity={isDimmed ? 0.4 : 1.0}
             >
-                {id}
+                {peerIdHex.substring(0, 8)}
             </Text>
         </group>
     );

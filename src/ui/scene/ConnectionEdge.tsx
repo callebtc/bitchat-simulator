@@ -26,7 +26,22 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
     // Packet Visualization State
     const [packets, setPackets] = useState<FlyingPacket[]>([]);
     
-    const isSelected = selectedId === connection.id;
+    // Selection Logic
+    const isConnectionSelected = selectedId === connection.id;
+    
+    // Check if one of the endpoints is selected
+    // selectedId corresponds to BitchatPerson.id
+    // We need to check if that person owns endpointA or endpointB
+    let isEndpointSelected = false;
+    if (selectedId) {
+        const person = engine.getPerson(selectedId);
+        if (person) {
+            isEndpointSelected = connection.involves(person.device);
+        }
+    }
+    
+    const isHighlighted = isConnectionSelected || isEndpointSelected;
+    const isDimmed = selectedId !== null && !isHighlighted;
 
     // Listen for packets via EventBus
     useEffect(() => {
@@ -137,10 +152,10 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                     />
                 </bufferGeometry>
                 <lineBasicMaterial 
-                    color={isSelected ? 'yellow' : 'green'} 
+                    color={isHighlighted ? 'yellow' : 'green'} 
                     transparent 
-                    opacity={isSelected ? 0.8 : 0.3} 
-                    linewidth={1} 
+                    opacity={isDimmed ? 0.2 : (isHighlighted ? 0.8 : 0.4)} 
+                    linewidth={isHighlighted ? 4 : 2} 
                 />
             </line>
             
