@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { useSimulation } from '../context/SimulationContext';
 import { useSelection } from '../context/SelectionContext';
 import { addRandomNode, setupDemo } from '../../simulation/DemoSetup';
+import { MovementMode } from '../../simulation/BitchatPerson';
 import { usePersistedState } from '../../utils/usePersistedState';
 import { EnvironmentSection } from './EnvironmentSection';
 
@@ -61,6 +62,10 @@ export const MainControlPanel: React.FC = () => {
     const { viewCenter } = useSelection();
     const [currentTime, setCurrentTime] = useState(Date.now());
     const [isCollapsed, setIsCollapsed] = usePersistedState('main_panel_collapsed', false);
+    const [isStatsExpanded, setIsStatsExpanded] = usePersistedState('stats_section_expanded', true);
+    
+    // Spawn busy toggle - NOT persisted, defaults to off
+    const [spawnBusy, setSpawnBusy] = useState(false);
     
     // Stats Refs (to avoid re-renders on every packet)
     const statsRef = useRef({
@@ -89,9 +94,19 @@ export const MainControlPanel: React.FC = () => {
             };
             forceUpdate({});
         };
+        
+        const handleEnvironmentLoaded = (data: { buildingCount: number }) => {
+            // Turn on spawn busy when map is loaded, turn off when cleared
+            if (data.buildingCount > 0) {
+                setSpawnBusy(true);
+            } else {
+                setSpawnBusy(false);
+            }
+        };
 
         engine.events.on('packet_transmitted', handlePacket);
         engine.events.on('reset', handleReset);
+        engine.events.on('environment_loaded', handleEnvironmentLoaded);
 
         const interval = setInterval(() => {
             const now = Date.now();
@@ -141,6 +156,7 @@ export const MainControlPanel: React.FC = () => {
         return () => {
             engine.events.off('packet_transmitted', handlePacket);
             engine.events.off('reset', handleReset);
+            engine.events.off('environment_loaded', handleEnvironmentLoaded);
             clearInterval(interval);
         };
     }, [engine]);
@@ -163,6 +179,13 @@ export const MainControlPanel: React.FC = () => {
     
     const peerCount = engine.getAllPeople().length;
     const connCount = engine.getAllConnections().length;
+    
+    const handleAddNode = () => {
+        addRandomNode(engine, { 
+            center: viewCenter,
+            initialMode: spawnBusy ? MovementMode.BUSY : undefined
+        });
+    };
 
     return (
         <div className="absolute top-4 left-4 w-72 bg-black/90 text-white p-3 rounded backdrop-blur-md border border-gray-800 shadow-2xl font-mono select-none pointer-events-auto transition-all duration-300">
@@ -189,7 +212,7 @@ export const MainControlPanel: React.FC = () => {
             </div>
 
             {/* Collapsible Content */}
-            <div className={`space-y-3 overflow-hidden transition-all duration-300 ease-in-out ${isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[700px] opacity-100'}`}>
+            <div className={`space-y-3 overflow-hidden transition-all duration-300 ease-in-out ${isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[800px] opacity-100'}`}>
                 {/* Main Stats Grid */}
                 <div className="grid grid-cols-2 gap-2">
                     <div className="bg-gray-900/50 p-2 rounded border border-gray-800">
@@ -202,48 +225,11 @@ export const MainControlPanel: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Packet Stats */}
-                <div className="space-y-1">
-                    <div className="text-[10px] text-gray-500 uppercase tracking-wider border-b border-gray-800 pb-1 mb-1">Packet Traffic</div>
-                    <div className="grid grid-cols-4 gap-1 text-center">
-                        <div>
-                            <div className="text-[9px] text-gray-600">1s</div>
-                            <div className="text-xs text-white">{count1s}</div>
-                        </div>
-                        <div>
-                            <div className="text-[9px] text-gray-600">10s</div>
-                            <div className="text-xs text-white">{count10s}</div>
-                        </div>
-                        <div>
-                            <div className="text-[9px] text-gray-600">1m</div>
-                            <div className="text-xs text-white">{count1m}</div>
-                        </div>
-                        <div>
-                            <div className="text-[9px] text-gray-600">Total</div>
-                            <div className="text-xs text-white">{statsRef.current.totalPackets}</div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Graphs */}
-                <div className="flex gap-2 justify-between border-t border-gray-800 pt-2 w-full">
-                    <TinyGraph 
-                        data={statsRef.current.connectionHistory} 
-                        color="#4ade80" 
-                        label="CONNS" 
-                    />
-                    <TinyGraph 
-                        data={statsRef.current.ppsHistory} 
-                        color="#22d3ee" 
-                        label="PKT/S" 
-                    />
-                </div>
-
-                {/* Actions */}
-                <div className="flex gap-1.5 pt-1">
+                {/* Actions - moved below counters */}
+                <div className="flex gap-1.5">
                     <button 
                         className="flex-1 bg-cyan-900/30 hover:bg-cyan-800/50 text-cyan-200 px-2 py-1.5 rounded text-[10px] font-bold border border-cyan-800/50 transition-all hover:shadow-[0_0_10px_rgba(34,211,238,0.2)]"
-                        onClick={() => addRandomNode(engine, viewCenter)}
+                        onClick={handleAddNode}
                     >
                         + ADD NODE
                     </button>
@@ -253,6 +239,96 @@ export const MainControlPanel: React.FC = () => {
                     >
                         RESET
                     </button>
+                </div>
+                
+                {/* Spawn Busy Toggle */}
+                <div className="flex items-center justify-between bg-gray-900/30 px-2 py-1.5 rounded border border-gray-800">
+                    <label className="text-[10px] text-gray-400 flex items-center gap-1.5 cursor-pointer select-none">
+                        <span className="uppercase tracking-wider">Spawn Busy</span>
+                        {spawnBusy && (
+                            <span className="text-[8px] text-amber-400 bg-amber-900/30 px-1 py-0.5 rounded">
+                                BUSY
+                            </span>
+                        )}
+                    </label>
+                    <button
+                        onClick={() => setSpawnBusy(!spawnBusy)}
+                        className={`relative w-8 h-4 rounded-full transition-colors ${
+                            spawnBusy ? 'bg-amber-600' : 'bg-gray-700'
+                        }`}
+                    >
+                        <div
+                            className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                                spawnBusy ? 'translate-x-4' : 'translate-x-0.5'
+                            }`}
+                        />
+                    </button>
+                </div>
+                
+                {/* Statistics Section (Expandable) */}
+                <div className="border-t border-gray-800 pt-2">
+                    {/* Header */}
+                    <button 
+                        className="w-full flex justify-between items-center text-[10px] text-gray-500 hover:text-gray-300 transition-colors mb-1"
+                        onClick={() => setIsStatsExpanded(!isStatsExpanded)}
+                    >
+                        <span className="uppercase tracking-wider font-bold flex items-center gap-2">
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <path d="M18 20V10"/>
+                                <path d="M12 20V4"/>
+                                <path d="M6 20v-6"/>
+                            </svg>
+                            Statistics
+                        </span>
+                        <svg 
+                            width="10" height="6" viewBox="0 0 10 6" fill="none" 
+                            className={`transform transition-transform ${isStatsExpanded ? 'rotate-180' : ''}`}
+                        >
+                            <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                    </button>
+                    
+                    {/* Expandable Content */}
+                    <div className={`overflow-hidden transition-all duration-300 ${isStatsExpanded ? 'max-h-64 opacity-100' : 'max-h-0 opacity-0'}`}>
+                        <div className="space-y-2 pt-1">
+                            {/* Packet Stats */}
+                            <div className="space-y-1">
+                                <div className="text-[10px] text-gray-500 uppercase tracking-wider border-b border-gray-800 pb-1 mb-1">Packet Traffic</div>
+                                <div className="grid grid-cols-4 gap-1 text-center">
+                                    <div>
+                                        <div className="text-[9px] text-gray-600">1s</div>
+                                        <div className="text-xs text-white">{count1s}</div>
+                                    </div>
+                                    <div>
+                                        <div className="text-[9px] text-gray-600">10s</div>
+                                        <div className="text-xs text-white">{count10s}</div>
+                                    </div>
+                                    <div>
+                                        <div className="text-[9px] text-gray-600">1m</div>
+                                        <div className="text-xs text-white">{count1m}</div>
+                                    </div>
+                                    <div>
+                                        <div className="text-[9px] text-gray-600">Total</div>
+                                        <div className="text-xs text-white">{statsRef.current.totalPackets}</div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Graphs */}
+                            <div className="flex gap-2 justify-between border-t border-gray-800 pt-2 w-full">
+                                <TinyGraph 
+                                    data={statsRef.current.connectionHistory} 
+                                    color="#4ade80" 
+                                    label="CONNS" 
+                                />
+                                <TinyGraph 
+                                    data={statsRef.current.ppsHistory} 
+                                    color="#22d3ee" 
+                                    label="PKT/S" 
+                                />
+                            </div>
+                        </div>
+                    </div>
                 </div>
 
                 {/* Environment Section */}

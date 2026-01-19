@@ -1,6 +1,6 @@
 import { SimulationEngine } from './SimulationEngine';
 import { BitchatDevice } from './BitchatDevice';
-import { BitchatPerson } from './BitchatPerson';
+import { BitchatPerson, MovementMode } from './BitchatPerson';
 import { BitchatAppSimulator } from './AppLayer/BitchatAppSimulator';
 
 export function setupDemo(engine: SimulationEngine, count: number = 5) {
@@ -23,14 +23,19 @@ export function setupDemo(engine: SimulationEngine, count: number = 5) {
     }
 }
 
-export function addRandomNode(engine: SimulationEngine, center?: { x: number, y: number }) {
+export interface AddNodeOptions {
+    center?: { x: number, y: number };
+    initialMode?: MovementMode;
+}
+
+export function addRandomNode(engine: SimulationEngine, options?: AddNodeOptions) {
     const d = BitchatDevice.createRandom();
     d.nickname = `User-${d.peerIDHex.substring(0,4)}`;
     const sim = new BitchatAppSimulator(d);
     d.setAppSimulator(sim);
     
-    const cx = center?.x ?? 0;
-    const cy = center?.y ?? 0;
+    const cx = options?.center?.x ?? 0;
+    const cy = options?.center?.y ?? 0;
     
     const p = new BitchatPerson(`p-${Date.now()}`, {
         x: cx + (Math.random() - 0.5) * 100, 
@@ -38,4 +43,9 @@ export function addRandomNode(engine: SimulationEngine, center?: { x: number, y:
     }, d);
     
     engine.addPerson(p);
+    
+    // Set initial movement mode if specified
+    if (options?.initialMode) {
+        p.setMode(options.initialMode);
+    }
 }
