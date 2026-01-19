@@ -5,6 +5,7 @@ import { addRandomNode, setupDemo } from '../../simulation/DemoSetup';
 import { MovementMode } from '../../simulation/BitchatPerson';
 import { usePersistedState } from '../../utils/usePersistedState';
 import { EnvironmentSection } from './EnvironmentSection';
+import { useLayout } from '../context/LayoutContext';
 
 // Types for history data
 interface HistoryPoint {
@@ -60,6 +61,7 @@ const TinyGraph: React.FC<{ data: HistoryPoint[], color: string, label: string, 
 export const MainControlPanel: React.FC = () => {
     const engine = useSimulation();
     const { viewCenter } = useSelection();
+    const { bottomPanelHeight } = useLayout();
     const [currentTime, setCurrentTime] = useState(Date.now());
     const [isCollapsed, setIsCollapsed] = usePersistedState('main_panel_collapsed', false);
     const [isStatsExpanded, setIsStatsExpanded] = usePersistedState('stats_section_expanded', true);
@@ -188,9 +190,12 @@ export const MainControlPanel: React.FC = () => {
     };
 
     return (
-        <div className="absolute top-4 left-4 w-72 bg-black/90 text-white p-3 rounded backdrop-blur-md border border-gray-800 shadow-2xl font-mono select-none pointer-events-auto transition-all duration-300">
+        <div 
+            className="absolute top-4 left-4 w-72 bg-black/90 text-white p-3 rounded backdrop-blur-md border border-gray-800 shadow-2xl font-mono select-none pointer-events-auto transition-all duration-300 flex flex-col"
+            style={{ maxHeight: `calc(100vh - ${bottomPanelHeight + 32}px)` }}
+        >
             {/* Header */}
-            <div className={`flex justify-between items-center ${isCollapsed ? '' : 'mb-3 border-b border-gray-800 pb-2'} transition-all`}>
+            <div className={`flex justify-between items-center shrink-0 ${isCollapsed ? '' : 'mb-3 border-b border-gray-800 pb-2'} transition-all`}>
                 <div className="flex items-center gap-2">
                      <h1 className="text-sm font-bold tracking-widest text-gray-200">BITCHAT<span className="text-cyan-500">SIM</span></h1>
                      <div className="flex items-center gap-2">
@@ -212,7 +217,7 @@ export const MainControlPanel: React.FC = () => {
             </div>
 
             {/* Collapsible Content */}
-            <div className={`space-y-3 overflow-hidden transition-all duration-300 ease-in-out ${isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[800px] opacity-100'}`}>
+            <div className={`space-y-3 transition-all duration-300 ease-in-out ${isCollapsed ? 'max-h-0 opacity-0 overflow-hidden' : 'max-h-[800px] opacity-100 overflow-y-auto custom-scrollbar'}`}>
                 {/* Main Stats Grid */}
                 <div className="grid grid-cols-2 gap-2">
                     <div className="bg-gray-900/50 p-2 rounded border border-gray-800">
