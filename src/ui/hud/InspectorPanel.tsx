@@ -161,6 +161,7 @@ export const InspectorPanel: React.FC = () => {
                             <option value={MovementMode.STILL}>STILL</option>
                             <option value={MovementMode.RANDOM_WALK}>RANDOM</option>
                             <option value={MovementMode.TARGET}>TARGET</option>
+                            <option value={MovementMode.BUSY}>BUSY</option>
                         </select>
                     </div>
                 </div>
@@ -168,6 +169,12 @@ export const InspectorPanel: React.FC = () => {
                 {person.mode === MovementMode.TARGET && (
                     <div className="text-[10px] text-yellow-500/80 mb-3 text-center bg-yellow-900/10 py-1 rounded border border-yellow-900/30">
                         Click map to set target
+                    </div>
+                )}
+
+                {person.mode === MovementMode.BUSY && (
+                    <div className="text-[10px] text-orange-500/80 mb-3 text-center bg-orange-900/10 py-1 rounded border border-orange-900/30">
+                        Walking to random locations
                     </div>
                 )}
 

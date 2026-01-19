@@ -6,7 +6,8 @@ import { EnvironmentManager, PathFinder, PathResult } from './environment';
 export enum MovementMode {
     STILL = 'STILL',
     RANDOM_WALK = 'RANDOM_WALK',
-    TARGET = 'TARGET'
+    TARGET = 'TARGET',
+    BUSY = 'BUSY'
 }
 
 /** Callback for when a path is calculated */
@@ -55,6 +56,17 @@ export class BitchatPerson {
     private readonly STUCK_TIME_THRESHOLD = 0.5;  // 0.5s to detect stuck
     private readonly UNSTUCK_TIME_THRESHOLD = 1;  // 1s of movement to confirm unstuck
     private readonly MAX_RECOVERY_DURATION = 10;  // max 10s random walk
+    
+    // Busy mode state
+    /** Whether the agent started busy mode inside or outside a building */
+    private busyModeIndoors: boolean = false;
+    /** Stuck detection timer for busy mode */
+    private busyStuckTimer: number = 0;
+    private readonly BUSY_STUCK_TIME_THRESHOLD = 1.5;  // 1.5s stuck = pick new target
+    /** Last recorded position for stuck detection */
+    private busyLastPosition: Point = { x: 0, y: 0 };
+    /** Minimum distance to travel to not be considered stuck */
+    private readonly BUSY_MIN_PROGRESS = 1.0;  // Must move at least 1 meter
 
     constructor(id: string, position: Point, device: BitchatDevice) {
         this.id = id;
@@ -81,6 +93,108 @@ export class BitchatPerson {
                  y: (Math.random() - 0.5) * this.MAX_SPEED 
              };
         }
+        if (mode === MovementMode.BUSY) {
+            this.initBusyMode();
+        }
+    }
+    
+    /**
+     * Initialize busy mode - determine if indoors/outdoors and pick first target.
+     */
+    private initBusyMode(): void {
+        this.busyStuckTimer = 0;
+        this.busyLastPosition = { x: this.position.x, y: this.position.y };
+        
+        // Determine if we're inside or outside a building
+        if (this.environment) {
+            const building = this.environment.isInsideBuilding({ 
+                x: this.position.x, 
+                y: this.position.y 
+            });
+            this.busyModeIndoors = building !== null;
+        } else {
+            this.busyModeIndoors = false;
+        }
+        
+        // Pick first random target
+        this.pickBusyTarget();
+    }
+    
+    /**
+     * Pick a new random target for busy mode.
+     * Respects the indoor/outdoor constraint.
+     */
+    private pickBusyTarget(): void {
+        const newTarget = this.generateRandomBusyTarget();
+        if (newTarget) {
+            // Use setTarget to calculate path
+            this.target = newTarget;
+            this.path = null;
+            this.currentWaypointIndex = 0;
+            
+            // Calculate path if we have environment with buildings
+            if (this.pathFinder && this.environment && this.environment.getBuildingCount() > 0) {
+                const result: PathResult = this.pathFinder.findPath(
+                    { x: this.position.x, y: this.position.y },
+                    { x: newTarget.x, y: newTarget.y }
+                );
+                
+                if (result.found && result.waypoints.length > 1) {
+                    this.path = result.waypoints.map(wp => ({ x: wp.x, y: wp.y }));
+                    this.currentWaypointIndex = 1;
+                    
+                    if (this.onPathCalculated) {
+                        this.onPathCalculated(this.path, newTarget);
+                    }
+                }
+            }
+            
+            // Reset stuck detection
+            this.busyStuckTimer = 0;
+            this.busyLastPosition = { x: this.position.x, y: this.position.y };
+        }
+    }
+    
+    /**
+     * Generate a random valid target for busy mode.
+     * If indoors, target must be inside a building.
+     * If outdoors, target must be outside all buildings.
+     */
+    private generateRandomBusyTarget(): Point | null {
+        const bounds = this.environment?.getBounds();
+        if (!bounds) {
+            // No environment, use default bounds
+            return {
+                x: (Math.random() - 0.5) * 800,
+                y: (Math.random() - 0.5) * 800
+            };
+        }
+        
+        const { localBounds } = bounds;
+        const maxAttempts = 50;
+        
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            // Generate random point within bounds
+            const x = localBounds.minX + Math.random() * (localBounds.maxX - localBounds.minX);
+            const y = localBounds.minY + Math.random() * (localBounds.maxY - localBounds.minY);
+            const candidate = { x, y };
+            
+            // Check if it matches our indoor/outdoor requirement
+            const insideBuilding = this.environment!.isInsideBuilding(candidate);
+            const isIndoors = insideBuilding !== null;
+            
+            if (isIndoors === this.busyModeIndoors) {
+                // Valid target found
+                return candidate;
+            }
+        }
+        
+        // Couldn't find valid target, just return a point outside buildings
+        // This is a fallback for edge cases (e.g., very dense indoor environments)
+        return {
+            x: this.position.x + (Math.random() - 0.5) * 100,
+            y: this.position.y + (Math.random() - 0.5) * 100
+        };
     }
     
     setTarget(p: Point) {
@@ -153,6 +267,12 @@ export class BitchatPerson {
             } else {
                 this.stuckTimer = 0;
             }
+        }
+        else if (this.mode === MovementMode.BUSY) {
+            this.updateBusyNavigation(dt);
+            
+            // Check for stuck condition - pick new target if stuck
+            this.checkBusyStuck(dt);
         }
 
         // Calculate proposed new position
@@ -369,6 +489,101 @@ export class BitchatPerson {
         const speed = Math.min(this.MAX_SPEED, distToFinal * 2);
         this.velocity.x = (dx / dist) * speed;
         this.velocity.y = (dy / dist) * speed;
+    }
+    
+    /**
+     * Update busy mode navigation - sets velocity towards target.
+     * Returns true if we need to skip the main movement update (picking new target).
+     */
+    private updateBusyNavigation(_dt: number): void {
+        // If no target, pick one
+        if (!this.target) {
+            this.pickBusyTarget();
+            if (!this.target) {
+                // Couldn't find target, stop
+                this.velocity = { x: 0, y: 0 };
+                return;
+            }
+        }
+        
+        // Navigate towards target (similar to TARGET mode but without switching to STILL)
+        let navTarget: Point;
+        
+        if (this.path && this.currentWaypointIndex < this.path.length) {
+            navTarget = this.path[this.currentWaypointIndex];
+        } else {
+            navTarget = this.target;
+        }
+        
+        const dx = navTarget.x - this.position.x;
+        const dy = navTarget.y - this.position.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        // Check if we've reached the current waypoint
+        if (dist < this.WAYPOINT_THRESHOLD) {
+            if (this.path && this.currentWaypointIndex < this.path.length - 1) {
+                // Move to next waypoint
+                this.currentWaypointIndex++;
+                this.busyStuckTimer = 0;  // Reset stuck timer on progress
+                return;
+            } else {
+                // Check if we've reached final target
+                const dxFinal = this.target.x - this.position.x;
+                const dyFinal = this.target.y - this.position.y;
+                const distFinal = Math.sqrt(dxFinal * dxFinal + dyFinal * dyFinal);
+                
+                if (distFinal < this.WAYPOINT_THRESHOLD) {
+                    // Arrived at destination - pick a new target
+                    this.target = null;
+                    this.path = null;
+                    this.currentWaypointIndex = 0;
+                    this.busyStuckTimer = 0;
+                    this.pickBusyTarget();
+                    return;
+                }
+            }
+        }
+        
+        // Calculate velocity towards target
+        if (dist > 0.01) {
+            const distToFinal = this.target ? 
+                Math.sqrt(
+                    (this.target.x - this.position.x) ** 2 + 
+                    (this.target.y - this.position.y) ** 2
+                ) : dist;
+            
+            const speed = Math.min(this.MAX_SPEED, Math.max(distToFinal * 2, this.MAX_SPEED * 0.5));
+            this.velocity.x = (dx / dist) * speed;
+            this.velocity.y = (dy / dist) * speed;
+        }
+    }
+    
+    /**
+     * Check if busy mode agent is stuck and pick new target if needed.
+     * Stuck = hasn't moved enough distance over time threshold.
+     */
+    private checkBusyStuck(dt: number): void {
+        this.busyStuckTimer += dt;
+        
+        // Check progress periodically
+        if (this.busyStuckTimer >= this.BUSY_STUCK_TIME_THRESHOLD) {
+            // Calculate actual distance traveled since last check
+            const dx = this.position.x - this.busyLastPosition.x;
+            const dy = this.position.y - this.busyLastPosition.y;
+            const distanceTraveled = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distanceTraveled < this.BUSY_MIN_PROGRESS) {
+                // Stuck! Pick a new target
+                this.target = null;
+                this.path = null;
+                this.currentWaypointIndex = 0;
+                this.pickBusyTarget();
+            }
+            
+            // Reset timer and record new position
+            this.busyStuckTimer = 0;
+            this.busyLastPosition = { x: this.position.x, y: this.position.y };
+        }
     }
 
     setVelocity(v: Vector2) {
