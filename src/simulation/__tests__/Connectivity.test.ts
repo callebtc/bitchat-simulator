@@ -8,6 +8,7 @@ describe('SimulationEngine - Connectivity', () => {
         const engine = new SimulationEngine();
         
         const p1 = new BitchatPerson('p1', { x: 0, y: 0 }, BitchatDevice.createRandom());
+        p1.device.alwaysScan = true;
         const p2 = new BitchatPerson('p2', { x: 50, y: 0 }, BitchatDevice.createRandom()); // dist 50 < 100
         
         engine.addPerson(p1);
@@ -28,6 +29,7 @@ describe('SimulationEngine - Connectivity', () => {
         const engine = new SimulationEngine();
         
         const p1 = new BitchatPerson('p1', { x: 0, y: 0 }, BitchatDevice.createRandom());
+        p1.device.alwaysScan = true;
         const p2 = new BitchatPerson('p2', { x: 50, y: 0 }, BitchatDevice.createRandom()); 
         
         engine.addPerson(p1);

@@ -19,11 +19,6 @@ export function setupDemo(engine: SimulationEngine, count: number = 5) {
             y: (Math.random() - 0.5) * 200
         }, d);
         
-        p.setVelocity({
-            x: (Math.random() - 0.5) * 10,
-            y: (Math.random() - 0.5) * 10
-        });
-        
         engine.addPerson(p);
     }
 }
@@ -41,10 +36,6 @@ export function addRandomNode(engine: SimulationEngine, center?: { x: number, y:
         x: cx + (Math.random() - 0.5) * 100, 
         y: cy + (Math.random() - 0.5) * 100
     }, d);
-     p.setVelocity({
-        x: (Math.random() - 0.5) * 10,
-        y: (Math.random() - 0.5) * 10
-    });
     
     engine.addPerson(p);
 }

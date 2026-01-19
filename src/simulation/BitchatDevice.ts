@@ -38,6 +38,7 @@ export class BitchatDevice {
     powerMode: PowerMode = PowerMode.PERFORMANCE;
     lastScanTime: number = -1;
     isScanning: boolean = false;
+    alwaysScan: boolean = false; // For testing
     
     // Limits
     connectionSettings: ConnectionSettings = {
@@ -88,7 +89,7 @@ export class BitchatDevice {
         }
         
         // Scanning Logic
-        this.isScanning = false;
+        this.isScanning = this.alwaysScan;
         const interval = SCAN_INTERVALS[this.powerMode];
         
         if (this.lastScanTime === -1) {

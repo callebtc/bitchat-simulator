@@ -7,7 +7,8 @@ export enum MovementMode {
     STILL = 'STILL',
     RANDOM_WALK = 'RANDOM_WALK',
     TARGET = 'TARGET',
-    BUSY = 'BUSY'
+    BUSY = 'BUSY',
+    MANUAL = 'MANUAL'
 }
 
 /** Callback for when a path is calculated */
@@ -58,8 +59,8 @@ export class BitchatPerson {
     private readonly MAX_RECOVERY_DURATION = 10;  // max 10s random walk
     
     // Busy mode state
-    /** Whether the agent started busy mode inside or outside a building */
-    private busyModeIndoors: boolean = false;
+    /** ID of the building the agent started busy mode in (null if outdoors) */
+    private busyBuildingId: string | null = null;
     /** Stuck detection timer for busy mode */
     private busyStuckTimer: number = 0;
     private readonly BUSY_STUCK_TIME_THRESHOLD = 1.5;  // 1.5s stuck = pick new target
@@ -111,9 +112,9 @@ export class BitchatPerson {
                 x: this.position.x, 
                 y: this.position.y 
             });
-            this.busyModeIndoors = building !== null;
+            this.busyBuildingId = building ? building.id : null;
         } else {
-            this.busyModeIndoors = false;
+            this.busyBuildingId = null;
         }
         
         // Pick first random target
@@ -157,40 +158,68 @@ export class BitchatPerson {
     
     /**
      * Generate a random valid target for busy mode.
-     * If indoors, target must be inside a building.
+     * If indoors, target must be inside the SAME building.
      * If outdoors, target must be outside all buildings.
      */
     private generateRandomBusyTarget(): Point | null {
-        const bounds = this.environment?.getBounds();
-        if (!bounds) {
+        if (!this.environment) {
             // No environment, use default bounds
             return {
                 x: (Math.random() - 0.5) * 800,
                 y: (Math.random() - 0.5) * 800
             };
         }
+
+        const maxAttempts = 50;
+
+        // CASE 1: Indoors - limit search to the specific building bounds
+        if (this.busyBuildingId) {
+            const building = this.environment.getBuildings().find(b => b.id === this.busyBuildingId);
+            if (!building) {
+                // Building disappeared? Fallback to outdoors
+                this.busyBuildingId = null;
+                return this.generateRandomBusyTarget();
+            }
+
+            const { minX, maxX, minY, maxY } = building.bounds;
+            
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                // Generate random point within building bounds
+                const x = minX + Math.random() * (maxX - minX);
+                const y = minY + Math.random() * (maxY - minY);
+                const candidate = { x, y };
+
+                // Verify it's actually inside this specific building
+                // (Bounding box includes empty corners)
+                const containerBuilding = this.environment.isInsideBuilding(candidate);
+                if (containerBuilding && containerBuilding.id === this.busyBuildingId) {
+                    return candidate;
+                }
+            }
+            
+            // If failed to find point in building, stay where we are (safest)
+            return { x: this.position.x, y: this.position.y };
+        }
+
+        // CASE 2: Outdoors - search global bounds but exclude buildings
+        const bounds = this.environment.getBounds();
+        if (!bounds) return null; // Should be handled by environment check above, but for type safety
         
         const { localBounds } = bounds;
-        const maxAttempts = 50;
         
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            // Generate random point within bounds
             const x = localBounds.minX + Math.random() * (localBounds.maxX - localBounds.minX);
             const y = localBounds.minY + Math.random() * (localBounds.maxY - localBounds.minY);
             const candidate = { x, y };
             
-            // Check if it matches our indoor/outdoor requirement
-            const insideBuilding = this.environment!.isInsideBuilding(candidate);
-            const isIndoors = insideBuilding !== null;
-            
-            if (isIndoors === this.busyModeIndoors) {
-                // Valid target found
+            // Check if it's outside ALL buildings
+            const insideBuilding = this.environment.isInsideBuilding(candidate);
+            if (!insideBuilding) {
                 return candidate;
             }
         }
         
-        // Couldn't find valid target, just return a point outside buildings
-        // This is a fallback for edge cases (e.g., very dense indoor environments)
+        // Couldn't find valid target, just return a point outside buildings nearby
         return {
             x: this.position.x + (Math.random() - 0.5) * 100,
             y: this.position.y + (Math.random() - 0.5) * 100
@@ -588,7 +617,6 @@ export class BitchatPerson {
 
     setVelocity(v: Vector2) {
         this.velocity = v;
-        // If manually setting velocity, maybe switch to STILL or custom?
-        // For drag, we set velocity to 0.
+        this.mode = MovementMode.MANUAL;
     }
 }
