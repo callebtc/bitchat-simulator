@@ -49,4 +49,4 @@ export type { CollisionResult } from './LineOfSight';
 
 // PathFinder
 export { PathFinder } from './PathFinder';
-export type { PathResult } from './PathFinder';
+export type { PathResult, GraphBuildProgress } from './PathFinder';

@@ -23,6 +23,9 @@ export interface PathResult {
     found: boolean;
 }
 
+/** Progress callback for async graph building */
+export type GraphBuildProgress = (progress: number, status: string) => void;
+
 /** A node in the visibility graph */
 interface GraphNode {
     point: Point2D;
@@ -31,6 +34,9 @@ interface GraphNode {
     /** Distances to each neighbor */
     distances: number[];
 }
+
+/** How many edge checks to do before yielding to UI */
+const CHUNK_SIZE = 500;
 
 /**
  * PathFinder using visibility graph and A* algorithm.
@@ -42,9 +48,14 @@ export class PathFinder {
     private padding: number = DEFAULT_PADDING;
     private graphBuilt: boolean = false;
     private needsRebuild: boolean = false;
+    private isBuilding: boolean = false;
+    private buildPromise: Promise<void> | null = null;
     
     /** Inflated polygons for visibility checks (maintains wall margin) */
     private inflatedPolygons: Point2D[][] = [];
+    
+    /** Progress callback */
+    onProgress?: GraphBuildProgress;
 
     /**
      * Prepare to build the visibility graph from buildings.
@@ -67,11 +78,123 @@ export class PathFinder {
     }
 
     /**
-     * Ensure the visibility graph is built (lazy initialization).
+     * Pre-build the visibility graph asynchronously.
+     * Call this after loading buildings to avoid blocking when first path is needed.
+     */
+    async buildGraphAsync(): Promise<void> {
+        if (this.graphBuilt && !this.needsRebuild) return;
+        if (this.isBuilding && this.buildPromise) {
+            return this.buildPromise;
+        }
+        
+        this.isBuilding = true;
+        this.buildPromise = this.doBuildGraphAsync();
+        
+        try {
+            await this.buildPromise;
+        } finally {
+            this.isBuilding = false;
+            this.buildPromise = null;
+        }
+    }
+    
+    /**
+     * Internal async graph building with progress reporting.
+     */
+    private async doBuildGraphAsync(): Promise<void> {
+        this.nodes = [];
+        this.inflatedPolygons = [];
+
+        if (this.buildings.length === 0) {
+            this.graphBuilt = true;
+            this.needsRebuild = false;
+            this.onProgress?.(1, 'Ready');
+            return;
+        }
+
+        this.onProgress?.(0, 'Preparing buildings...');
+        await this.yieldToUI();
+
+        // Build inflated polygons for visibility checks
+        for (const building of this.buildings) {
+            const inflated = this.getInflatedPolygon(building.vertices, this.padding);
+            if (inflated.length >= 3) {
+                this.inflatedPolygons.push(inflated);
+            }
+        }
+
+        // Extract padded corner points from all buildings
+        const cornerPoints: Point2D[] = [];
+        for (const building of this.buildings) {
+            const padded = this.getPaddedVertices(building.vertices);
+            cornerPoints.push(...padded);
+        }
+
+        // Create nodes for each corner point
+        for (const point of cornerPoints) {
+            this.nodes.push({
+                point,
+                neighbors: [],
+                distances: [],
+            });
+        }
+
+        this.onProgress?.(0.1, `Building visibility graph (${this.nodes.length} nodes)...`);
+        await this.yieldToUI();
+
+        // Build edges between visible pairs (the expensive O(n²) part)
+        const totalPairs = (this.nodes.length * (this.nodes.length - 1)) / 2;
+        let pairCount = 0;
+        let lastProgressUpdate = 0;
+        
+        for (let i = 0; i < this.nodes.length; i++) {
+            for (let j = i + 1; j < this.nodes.length; j++) {
+                const a = this.nodes[i].point;
+                const b = this.nodes[j].point;
+
+                if (this.canSee(a, b)) {
+                    const dist = this.distance(a, b);
+                    this.nodes[i].neighbors.push(j);
+                    this.nodes[i].distances.push(dist);
+                    this.nodes[j].neighbors.push(i);
+                    this.nodes[j].distances.push(dist);
+                }
+                
+                pairCount++;
+                
+                // Yield periodically to keep UI responsive
+                if (pairCount % CHUNK_SIZE === 0) {
+                    const progress = 0.1 + (pairCount / totalPairs) * 0.9;
+                    // Only update progress every 5%
+                    if (progress - lastProgressUpdate > 0.05) {
+                        lastProgressUpdate = progress;
+                        this.onProgress?.(progress, `Building visibility graph (${Math.round(progress * 100)}%)...`);
+                    }
+                    await this.yieldToUI();
+                }
+            }
+        }
+
+        this.graphBuilt = true;
+        this.needsRebuild = false;
+        this.onProgress?.(1, 'Ready');
+    }
+    
+    /**
+     * Yield to the UI thread.
+     */
+    private yieldToUI(): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, 0));
+    }
+    
+    /**
+     * Ensure the visibility graph is built (synchronous fallback).
      */
     private ensureGraphBuilt(): void {
         if (this.graphBuilt && !this.needsRebuild) return;
         
+        // If currently building async, wait for it (but this is a sync call so we can't)
+        // Fall back to synchronous build
         this.nodes = [];
         this.inflatedPolygons = [];
 
@@ -123,6 +246,13 @@ export class PathFinder {
 
         this.graphBuilt = true;
         this.needsRebuild = false;
+    }
+    
+    /**
+     * Check if graph is currently being built.
+     */
+    isBuildingGraph(): boolean {
+        return this.isBuilding;
     }
 
     /**

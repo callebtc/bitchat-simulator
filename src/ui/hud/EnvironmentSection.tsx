@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useSimulation } from '../context/SimulationContext';
 import { usePersistedState } from '../../utils/usePersistedState';
 import { fetchBuildingsAround, clearOSMCache } from '../../simulation/environment';
@@ -23,6 +23,8 @@ export const EnvironmentSection: React.FC = () => {
     const [customLon, setCustomLon] = usePersistedState('env_custom_lon', '-73.9855');
     const [customRadius, setCustomRadius] = usePersistedState('env_custom_radius', '200');
     const [isLoading, setIsLoading] = useState(false);
+    const [loadingStatus, setLoadingStatus] = useState('');
+    const [graphProgress, setGraphProgress] = useState(0);
     const [error, setError] = useState<string | null>(null);
     const [, forceUpdate] = useState({});
     
@@ -32,9 +34,22 @@ export const EnvironmentSection: React.FC = () => {
     const isCustom = selectedPreset === PRESET_LOCATIONS.length - 1;
     const hasEnvironment = buildingCount > 0;
 
+    // Set up progress callback on pathfinder
+    useEffect(() => {
+        engine.pathFinder.onProgress = (progress, status) => {
+            setGraphProgress(progress);
+            setLoadingStatus(status);
+        };
+        return () => {
+            engine.pathFinder.onProgress = undefined;
+        };
+    }, [engine.pathFinder]);
+
     const handleLoad = async () => {
         setIsLoading(true);
         setError(null);
+        setGraphProgress(0);
+        setLoadingStatus('Fetching map data...');
         
         try {
             let lat: number, lon: number, radius: number;
@@ -68,8 +83,13 @@ export const EnvironmentSection: React.FC = () => {
             const geojson = await fetchBuildingsAround(lat, lon, radius);
             engine.environment.loadFromGeoJSON(geojson, lat, lon);
             
-            // Rebuild pathfinding graph for navigation
+            setLoadingStatus('Preparing pathfinding...');
+            
+            // Prepare pathfinding graph (marks for lazy build)
             engine.rebuildPathfindingGraph();
+            
+            // Build the graph asynchronously with progress
+            await engine.pathFinder.buildGraphAsync();
             
             // Emit event so BuildingLayer and other components update
             engine.events.emit('environment_loaded', { 
@@ -83,12 +103,13 @@ export const EnvironmentSection: React.FC = () => {
             setError(e instanceof Error ? e.message : 'Failed to load');
         } finally {
             setIsLoading(false);
+            setLoadingStatus('');
+            setGraphProgress(0);
         }
     };
 
     const handleClear = () => {
         engine.environment.clear();
-        // Rebuild pathfinding graph (will be empty)
         engine.rebuildPathfindingGraph();
         engine.events.emit('environment_loaded', { buildingCount: 0 });
         forceUpdate({});
@@ -181,6 +202,27 @@ export const EnvironmentSection: React.FC = () => {
                         </div>
                     )}
 
+                    {/* Loading Progress */}
+                    {isLoading && (
+                        <div className="space-y-1">
+                            <div className="flex items-center gap-2 text-[9px] text-blue-300">
+                                <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+                                </svg>
+                                <span>{loadingStatus || 'Loading...'}</span>
+                            </div>
+                            {graphProgress > 0 && graphProgress < 1 && (
+                                <div className="w-full bg-gray-800 rounded-full h-1.5 overflow-hidden">
+                                    <div 
+                                        className="bg-blue-500 h-1.5 transition-all duration-150 ease-out"
+                                        style={{ width: `${graphProgress * 100}%` }}
+                                    />
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {/* Error Message */}
                     {error && (
                         <div className="text-[9px] text-red-400 bg-red-900/20 px-2 py-1 rounded border border-red-900/50">
@@ -189,7 +231,7 @@ export const EnvironmentSection: React.FC = () => {
                     )}
 
                     {/* Current Environment Status */}
-                    {hasEnvironment && bounds && (
+                    {hasEnvironment && bounds && !isLoading && (
                         <div className="text-[9px] text-gray-500 bg-blue-900/10 px-2 py-1.5 rounded border border-blue-900/30">
                             <div className="flex justify-between">
                                 <span>Buildings:</span>
@@ -217,15 +259,7 @@ export const EnvironmentSection: React.FC = () => {
                                         : 'bg-blue-900/30 hover:bg-blue-800/50 text-blue-200 border-blue-800/50 hover:shadow-[0_0_10px_rgba(59,130,246,0.2)]'
                             }`}
                         >
-                            {isLoading ? (
-                                <span className="flex items-center justify-center gap-1">
-                                    <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none"/>
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
-                                    </svg>
-                                    Loading...
-                                </span>
-                            ) : 'LOAD MAP'}
+                            {isLoading ? 'LOADING...' : 'LOAD MAP'}
                         </button>
                         <button
                             onClick={handleClear}
