@@ -28,24 +28,23 @@ export const InteractionPlane: React.FC = () => {
     };
 
     const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
-        // If we clicked the background (InteractionPlane)
-        // If not dragging, this is a "Background Click"
-        // If we have a selection, this could be a move command (RTS style)
-        // Or deselect? 
-        // Let's implement RTS move if a node is selected.
-        
-        if (selectedId && !isDragging) {
-            const person = engine.getPerson(selectedId);
-            if (person) {
-                // Set target
-                person.setTarget({ x: e.point.x, y: e.point.y });
-                // Don't deselect
-                return; 
+        // Left Click (0): Deselect
+        if (e.button === 0) {
+            if (!isDragging) {
+                select(null, null);
             }
         }
         
-        // Deselect if clicking empty space and no logic handled it
-        select(null, null);
+        // Right Click (2): Move Target (RTS Style)
+        if (e.button === 2) {
+            if (selectedId && !isDragging) {
+                const person = engine.getPerson(selectedId);
+                if (person) {
+                    // Set target
+                    person.setTarget({ x: e.point.x, y: e.point.y });
+                }
+            }
+        }
     };
 
     return (

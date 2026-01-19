@@ -1,4 +1,4 @@
-import React, { useRef, useMemo } from 'react';
+import React, { useRef, useMemo, useEffect } from 'react';
 import { useFrame, ThreeEvent } from '@react-three/fiber';
 import { useSimulation } from '../context/SimulationContext';
 import { useSelection } from '../context/SelectionContext';
@@ -27,11 +27,40 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     // Color (Use Peer ID)
     const color = useMemo(() => getPeerColor(peerIdHex), [peerIdHex]);
     
-    useFrame(() => {
+    // Knock Animation State
+    const knockScale = useRef(1.0);
+    
+    // Listen for packet events to trigger knock
+    useEffect(() => {
+        const onPacket = (data: any) => {
+            if (data.fromId === peerIdHex) {
+                // Check if origin
+                const packet = data.packet;
+                const senderHex = Array.from(packet.senderID as Uint8Array)
+                    .map(b => b.toString(16).padStart(2, '0'))
+                    .join('');
+                
+                if (senderHex === peerIdHex) {
+                    knockScale.current = 1.5; // Instant pop
+                }
+            }
+        };
+        engine.events.on('packet_transmitted', onPacket);
+        return () => { engine.events.off('packet_transmitted', onPacket); };
+    }, [engine, peerIdHex]);
+    
+    useFrame((_, delta) => {
         if (!meshRef.current || !person) return;
+        
+        // Decay knock
+        knockScale.current += (1.0 - knockScale.current) * 10 * delta;
         
         meshRef.current.position.x = person.position.x;
         meshRef.current.position.y = person.position.y;
+        
+        // Apply knock + selection scale
+        const baseScale = isSelected ? 1.2 : 1.0;
+        meshRef.current.scale.setScalar(baseScale * knockScale.current);
     });
     
     const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
