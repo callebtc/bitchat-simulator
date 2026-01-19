@@ -11,14 +11,19 @@ export const BottomPanel: React.FC = () => {
     const [isCollapsed, setIsCollapsed] = usePersistedState('bottom_panel_collapsed', false);
     const [activeTab, setActiveTab] = usePersistedState<'LOGS' | 'CHAT'>('bottom_panel_tab', 'LOGS');
 
+    // Chat tab is only visible when a node is selected
+    const showChatTab = !!selectedId;
+
     useEffect(() => {
         setBottomPanelHeight(isCollapsed ? 32 : 256);
     }, [isCollapsed, setBottomPanelHeight]);
 
-    // Auto-switch to CHAT when a node is selected if it wasn't already?
-    // Or just let user switch.
-    // If we want chat button visible only when node selected:
-    const showChatTab = !!selectedId;
+    // Automatically switch back to LOGS if CHAT tab becomes invalid (e.g. deselection)
+    useEffect(() => {
+        if (!showChatTab && activeTab === 'CHAT') {
+            setActiveTab('LOGS');
+        }
+    }, [showChatTab, activeTab, setActiveTab]);
 
     return (
         <div className={`absolute bottom-0 left-0 right-0 border-t border-gray-800 flex flex-col shadow-lg pointer-events-auto transition-all duration-300 ${isCollapsed ? 'h-8' : 'h-64'}`}>
