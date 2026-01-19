@@ -21,6 +21,7 @@ interface FlyingPacket {
     color: string;
     isRelay: boolean;
     senderId: string;
+    type: MessageType;
 }
 
 /**
@@ -157,7 +158,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             
             setPackets(prev => [
                 ...prev, 
-                { id: Math.random().toString(), progress: 0, direction, color, isRelay, senderId: senderHex }
+                { id: Math.random().toString(), progress: 0, direction, color, isRelay, senderId: senderHex, type: p.type }
             ]);
         };
         
@@ -304,7 +305,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
 
                  {/* Flying Packets (Even in Graph Mode) */}
                  {packets
-                    .filter(p => !selectedPeerIDHex || p.senderId === selectedPeerIDHex)
+                    .filter(p => !selectedPeerIDHex || p.senderId === selectedPeerIDHex || p.type === MessageType.ANNOUNCE)
                     .map(p => {
                     const posA = connection.endpointA.position!;
                     const posB = connection.endpointB.position!;
@@ -354,7 +355,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
 
                 {/* Flying Packets */}
                 {packets
-                    .filter(p => !selectedPeerIDHex || p.senderId === selectedPeerIDHex)
+                    .filter(p => !selectedPeerIDHex || p.senderId === selectedPeerIDHex || p.type === MessageType.ANNOUNCE)
                     .map(p => {
                     const posA = connection.endpointA.position!;
                     const posB = connection.endpointB.position!;
