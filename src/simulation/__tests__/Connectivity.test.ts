@@ -17,7 +17,11 @@ describe('SimulationEngine - Connectivity', () => {
         let formed = false;
         engine.events.on('connection_formed', () => { formed = true; });
         
-        engine.step(0.1);
+        // Initial step: Initiates connection (Pending state)
+        engine.step(0.1, 1000);
+        
+        // Advance time > 100ms to finalize connection
+        engine.step(0.1, 1150);
         
         expect(formed).toBe(true);
         // Check internal state via ConnectionManager
@@ -35,8 +39,10 @@ describe('SimulationEngine - Connectivity', () => {
         engine.addPerson(p1);
         engine.addPerson(p2);
         
-        // Step to form connection
-        engine.step(0.1);
+        // Step to form connection (Need > 100ms)
+        engine.step(0.1, 1000);
+        engine.step(0.1, 1150);
+        
         expect(p1.device.connectionManager.getConnectedPeers().length).toBe(1);
         
         // Move p2 far away
@@ -45,7 +51,8 @@ describe('SimulationEngine - Connectivity', () => {
         let broken = false;
         engine.events.on('connection_broken', () => { broken = true; });
         
-        engine.step(0.1);
+        // Step to process break
+        engine.step(0.1, 2000);
         
         expect(broken).toBe(true);
         expect(p1.device.connectionManager.getConnectedPeers().length).toBe(0);

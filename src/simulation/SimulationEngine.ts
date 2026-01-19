@@ -2,7 +2,7 @@ import { BitchatPerson } from './BitchatPerson';
 import { SpatialManager } from './SpatialManager';
 import { EventBus } from '../events/EventBus';
 import { BitchatConnection } from './BitchatConnection';
-import { BitchatConnectionBLE } from './BitchatConnectionBLE';
+import { BitchatConnectionBLE, RSSI_CONFIG } from './BitchatConnectionBLE';
 import { LogManager } from './LogManager';
 import { EnvironmentManager, PathFinder } from './environment';
 
@@ -26,6 +26,8 @@ export class SimulationEngine {
     
     // Track global connections to manage lifecycle: key is "idA-idB" (sorted)
     private globalConnections: Map<string, BitchatConnection> = new Map();
+    // Track pending connections (waiting for 100ms stability check)
+    private pendingConnections: Map<string, { conn: BitchatConnectionBLE, finalizeAt: number }> = new Map();
 
     constructor() {
         this.spatial = new SpatialManager();
@@ -128,10 +130,142 @@ export class SimulationEngine {
 
         // Update Connections (Latency + RSSI)
         this.updateConnectionsRSSI(now);
+        this.updatePendingConnections(now);
 
-        this.updateConnectivity();
+        this.updateConnectivity(now);
         
         this.events.emit('tick', this.people);
+    }
+
+    private updatePendingConnections(now: number) {
+        const toFinalize: string[] = [];
+        const toDrop: string[] = [];
+
+        this.pendingConnections.forEach((pending, key) => {
+            const { conn, finalizeAt } = pending;
+            
+            // 1. Update RSSI
+            const stable = conn.updateRSSI(now);
+            
+            // 2. Check Distance (Hard cutoff)
+            let distanceOk = true;
+            if (conn.endpointA.position && conn.endpointB.position) {
+                const dx = conn.endpointA.position.x - conn.endpointB.position.x;
+                const dy = conn.endpointA.position.y - conn.endpointB.position.y;
+                if (Math.sqrt(dx*dx + dy*dy) > DISCONNECT_RADIUS) {
+                    distanceOk = false;
+                }
+            }
+
+            // 3. Check Validity
+            if (!stable || !distanceOk) {
+                toDrop.push(key);
+                return;
+            }
+
+            // 4. Check Timer
+            if (now >= finalizeAt) {
+                toFinalize.push(key);
+            }
+        });
+
+        // Apply changes
+        toDrop.forEach(key => this.pendingConnections.delete(key));
+        
+        toFinalize.forEach(key => {
+            const pending = this.pendingConnections.get(key);
+            if (pending) {
+                this.pendingConnections.delete(key);
+                this.finalizeConnection(key, pending.conn);
+            }
+        });
+    }
+
+    private updateConnectivity(now: number) {
+        // Optimization: Use SpatialManager to find candidates instead of O(N^2)
+        const peopleList = Array.from(this.people.values());
+        const processedPairs = new Set<string>();
+        
+        for (const p1 of peopleList) {
+            // Get neighbors within connect radius (plus buffer for disconnect logic)
+            const neighbors = this.spatial.getNeighbors(p1, DISCONNECT_RADIUS);
+            
+            for (const p2 of neighbors) {
+                // Ensure unique pair processing (A-B vs B-A)
+                const key = this.getConnectionKey(p1.device.peerIDHex, p2.device.peerIDHex);
+                if (processedPairs.has(key)) continue;
+                processedPairs.add(key);
+                
+                const existingConn = this.globalConnections.get(key);
+                const pendingConn = this.pendingConnections.get(key);
+                
+                const dx = p1.position.x - p2.position.x;
+                const dy = p1.position.y - p2.position.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                if (existingConn) {
+                    // Check break conditions
+                    if (dist > DISCONNECT_RADIUS) {
+                        this.breakConnection(key, existingConn);
+                    } else if (!existingConn.isActive) {
+                        this.breakConnection(key, existingConn);
+                    }
+                } else if (pendingConn) {
+                     // Already pending, do nothing (handled in updatePendingConnections)
+                } else {
+                    // Check form conditions
+                    // 1. Distance check (optimization)
+                    if (dist < CONNECT_RADIUS) {
+                        // 2. RSSI Check
+                        const estimatedRSSI = BitchatConnectionBLE.estimateRSSI(p1.position, p2.position, this.environment);
+                        if (estimatedRSSI <= RSSI_CONFIG.DISCONNECT_THRESHOLD) {
+                             continue; // Signal too weak to establish
+                        }
+
+                        // 3. Check Scanning & Role Availability
+                        let initiator: BitchatPerson | null = null;
+                        
+                        if (p1.device.isScanning && 
+                            p1.device.connectionManager.canAcceptConnection(true) && 
+                            p2.device.connectionManager.canAcceptConnection(false)) {
+                            initiator = p1;
+                        }
+                        else if (p2.device.isScanning && 
+                                 p2.device.connectionManager.canAcceptConnection(true) && 
+                                 p1.device.connectionManager.canAcceptConnection(false)) {
+                            initiator = p2;
+                        }
+                        
+                        if (initiator) {
+                            this.initiateConnection(key, p1, p2, initiator.device, now, estimatedRSSI);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Cleanup connections that are now out of range and weren't found by neighbor search
+        // (Because getNeighbors might exclude far away nodes that are still connected but > radius)
+        // Actually, DISCONNECT_RADIUS in getNeighbors handles the break logic for nearby-ish nodes.
+        // But if a node teleports or moves VERY fast, it might not be in neighbor list.
+        // So we should iterate existing connections too for safety.
+        
+        this.globalConnections.forEach((conn, key) => {
+            if (!processedPairs.has(key)) {
+                // We didn't check this connection in the spatial loop.
+                // Check distance manually.
+                
+                if (!conn.endpointA.position || !conn.endpointB.position) return;
+                
+                const dx = conn.endpointA.position.x - conn.endpointB.position.x;
+                const dy = conn.endpointA.position.y - conn.endpointB.position.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                if (dist > DISCONNECT_RADIUS) {
+                    this.breakConnection(key, conn);
+                }
+            }
+        });
     }
 
     private loop = () => {
@@ -206,95 +340,20 @@ export class SimulationEngine {
         }
     }
 
-    private updateConnectivity() {
-        // Optimization: Use SpatialManager to find candidates instead of O(N^2)
-        const peopleList = Array.from(this.people.values());
-        const processedPairs = new Set<string>();
-        
-        for (const p1 of peopleList) {
-            // Get neighbors within connect radius (plus buffer for disconnect logic)
-            const neighbors = this.spatial.getNeighbors(p1, DISCONNECT_RADIUS);
-            
-            for (const p2 of neighbors) {
-                // Ensure unique pair processing (A-B vs B-A)
-                const key = this.getConnectionKey(p1.device.peerIDHex, p2.device.peerIDHex);
-                if (processedPairs.has(key)) continue;
-                processedPairs.add(key);
-                
-                const existingConn = this.globalConnections.get(key);
-                
-                const dx = p1.position.x - p2.position.x;
-                const dy = p1.position.y - p2.position.y;
-                const dist = Math.sqrt(dx*dx + dy*dy);
-                
-                if (existingConn) {
-                    // Check break conditions
-                    if (dist > DISCONNECT_RADIUS) {
-                        this.breakConnection(key, existingConn);
-                    } else if (!existingConn.isActive) {
-                        this.breakConnection(key, existingConn);
-                    }
-                } else {
-                    // Check form conditions
-                    if (dist < CONNECT_RADIUS) {
-                        // Check Scanning & Role Availability
-                        let initiator: BitchatPerson | null = null;
-                        
-                        if (p1.device.isScanning && 
-                            p1.device.connectionManager.canAcceptConnection(true) && 
-                            p2.device.connectionManager.canAcceptConnection(false)) {
-                            initiator = p1;
-                        }
-                        else if (p2.device.isScanning && 
-                                 p2.device.connectionManager.canAcceptConnection(true) && 
-                                 p1.device.connectionManager.canAcceptConnection(false)) {
-                            initiator = p2;
-                        }
-                        
-                        if (initiator) {
-                            this.formConnection(key, p1, p2, initiator.device);
-                        }
-                    }
-                }
-            }
-        }
-        
-        // Cleanup connections that are now out of range and weren't found by neighbor search
-        // (Because getNeighbors might exclude far away nodes that are still connected but > radius)
-        // Actually, DISCONNECT_RADIUS in getNeighbors handles the break logic for nearby-ish nodes.
-        // But if a node teleports or moves VERY fast, it might not be in neighbor list.
-        // So we should iterate existing connections too for safety.
-        
-        this.globalConnections.forEach((conn, key) => {
-            if (!processedPairs.has(key)) {
-                // We didn't check this connection in the spatial loop.
-                // Check distance manually.
-                
-                if (!conn.endpointA.position || !conn.endpointB.position) return;
-                
-                const dx = conn.endpointA.position.x - conn.endpointB.position.x;
-                const dy = conn.endpointA.position.y - conn.endpointB.position.y;
-                const dist = Math.sqrt(dx*dx + dy*dy);
-                
-                if (dist > DISCONNECT_RADIUS) {
-                    this.breakConnection(key, conn);
-                }
-            }
-        });
-    }
-    
     private getConnectionKey(id1: string, id2: string): string {
         return id1 < id2 ? `${id1}-${id2}` : `${id2}-${id1}`;
     }
     
-    private formConnection(key: string, p1: BitchatPerson, p2: BitchatPerson, initiator: any) {
+    private initiateConnection(key: string, p1: BitchatPerson, p2: BitchatPerson, initiator: any, now: number, initialRSSI: number) {
         const conn = new BitchatConnectionBLE(p1.device, p2.device, initiator);
         conn.setLogger(this.logManager);
-        
-        // Attach environment reference for RSSI calculations
         conn.environment = this.environment;
+        conn.rssi = initialRSSI; // Start with the estimated value
         
-        // Hook up visualization events
+        // Hook up visualization events immediately so we might see "attempting" states later if needed?
+        // Actually, let's keep visualization for finalized connections only to avoid noise.
+        // Wait, if we want to debug, maybe we should log.
+        
         conn.onPacketSent = (packet, from) => {
             this.events.emit('packet_transmitted', {
                 connectionId: conn.id,
@@ -303,14 +362,37 @@ export class SimulationEngine {
             });
         };
         
+        this.pendingConnections.set(key, {
+            conn,
+            finalizeAt: now + 100 // 100ms delay
+        });
+    }
+
+    private finalizeConnection(key: string, conn: BitchatConnectionBLE) {
+        // Double check limits before finalizing?
+        // Devices might have filled up slots in the last 100ms.
+        const p1Dev = conn.endpointA;
+        const p2Dev = conn.endpointB;
+        
+        // We need to know who is client and who is server to check specific limits.
+        // conn.initiator is the Client.
+        const isP1Client = conn.initiator === p1Dev;
+        
+        if (!p1Dev.connectionManager.canAcceptConnection(isP1Client) || 
+            !p2Dev.connectionManager.canAcceptConnection(!isP1Client)) {
+            // Slots full, abort.
+             this.logManager.log('INFO', 'CONNECTION', 'Connection Failed (Slots Full during pending)', conn.id);
+             return;
+        }
+
         this.globalConnections.set(key, conn);
         
-        p1.device.connectionManager.addConnection(conn);
-        p2.device.connectionManager.addConnection(conn);
+        p1Dev.connectionManager.addConnection(conn);
+        p2Dev.connectionManager.addConnection(conn);
         
         this.events.emit('connection_formed', conn);
         this.logManager.log('INFO', 'CONNECTION', 'Connection Formed', conn.id, {
-             between: [p1.device.nickname, p2.device.nickname]
+             between: [p1Dev.nickname, p2Dev.nickname]
         });
     }
     

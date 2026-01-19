@@ -54,6 +54,29 @@ export class BitchatConnectionBLE extends BitchatConnection {
         this.noisePhase = Math.random() * Math.PI * 2;
     }
 
+    /**
+     * Calculate theoretical RSSI based on distance and environment (no noise/smoothing)
+     */
+    static estimateRSSI(posA: {x: number, y: number}, posB: {x: number, y: number}, environment: EnvironmentManager | null): number {
+        if (!posA || !posB) return RSSI_CONFIG.DISCONNECT_THRESHOLD - 10;
+
+        const dx = posA.x - posB.x;
+        const dy = posA.y - posB.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const effectiveDistance = Math.max(distance, 0.1);
+
+        const pathLoss = 10 * RSSI_CONFIG.PATH_LOSS_EXPONENT * Math.log10(effectiveDistance);
+        let targetRSSI = RSSI_CONFIG.AT_1M - pathLoss;
+
+        if (environment) {
+            const buildingsInPath = environment.getBuildingsInPath(posA, posB);
+            const stats = calculateLineAttenuationStats(posA, posB, buildingsInPath);
+            targetRSSI -= stats.total;
+        }
+
+        return targetRSSI;
+    }
+
     send(packet: BitchatPacket, from: BitchatDevice): void {
         if (!this.isActive) return;
 
