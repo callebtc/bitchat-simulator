@@ -20,6 +20,8 @@ export class SimulationEngine {
     
     private isRunning: boolean = false;
     private lastTime: number = 0;
+    private accumulatedTime: number = 0;
+    private readonly FIXED_TIME_STEP = 0.05; // 50ms
     private people: Map<string, BitchatPerson> = new Map();
     
     // Track global connections to manage lifecycle: key is "idA-idB" (sorted)
@@ -111,15 +113,18 @@ export class SimulationEngine {
         this.isRunning = false;
     }
 
-    // Step method for manual stepping (testing)
-    step(dt: number) {
-        const now = performance.now();
+    // Step method for manual stepping (testing) or internal loop
+    step(dt: number, nowOverride?: number) {
+        const now = nowOverride ?? performance.now();
         
         // Update positions
         this.people.forEach(person => {
             person.update(dt);
             person.device.tick(now);
         });
+        
+        // Update Spatial Grid
+        this.spatial.updateAll();
 
         // Update Connections (Latency + RSSI)
         this.updateConnectionsRSSI(now);
@@ -136,7 +141,21 @@ export class SimulationEngine {
         const dt = (now - this.lastTime) / 1000; // seconds
         this.lastTime = now;
 
-        this.step(dt);
+        // Cap dt to prevent spiral of death if tab was backgrounded
+        const safeDt = Math.min(dt, 0.25);
+
+        this.accumulatedTime += safeDt;
+
+        while (this.accumulatedTime >= this.FIXED_TIME_STEP) {
+            this.step(this.FIXED_TIME_STEP, now - (this.accumulatedTime * 1000)); 
+            // Note: passing approx 'now' for the step. 
+            // Ideally simulation time should be decoupled from wall clock 'now' passed to tick(),
+            // but for packet delivery (wall clock based) we need to be careful.
+            // Actually, we should probably advance a "simulation time" variable instead of using performance.now() inside step for logic.
+            // But for now, let's keep it simple.
+            
+            this.accumulatedTime -= this.FIXED_TIME_STEP;
+        }
 
         requestAnimationFrame(this.loop);
     }
@@ -188,43 +207,44 @@ export class SimulationEngine {
     }
 
     private updateConnectivity() {
+        // Optimization: Use SpatialManager to find candidates instead of O(N^2)
         const peopleList = Array.from(this.people.values());
+        const processedPairs = new Set<string>();
         
-        for (let i = 0; i < peopleList.length; i++) {
-            for (let j = i + 1; j < peopleList.length; j++) {
-                const p1 = peopleList[i];
-                const p2 = peopleList[j];
+        for (const p1 of peopleList) {
+            // Get neighbors within connect radius (plus buffer for disconnect logic)
+            const neighbors = this.spatial.getNeighbors(p1, DISCONNECT_RADIUS);
+            
+            for (const p2 of neighbors) {
+                // Ensure unique pair processing (A-B vs B-A)
+                const key = this.getConnectionKey(p1.device.peerIDHex, p2.device.peerIDHex);
+                if (processedPairs.has(key)) continue;
+                processedPairs.add(key);
+                
+                const existingConn = this.globalConnections.get(key);
                 
                 const dx = p1.position.x - p2.position.x;
                 const dy = p1.position.y - p2.position.y;
                 const dist = Math.sqrt(dx*dx + dy*dy);
                 
-                const key = this.getConnectionKey(p1.device.peerIDHex, p2.device.peerIDHex);
-                const existingConn = this.globalConnections.get(key);
-                
                 if (existingConn) {
-                    // Check break conditions (distance-based as fallback)
+                    // Check break conditions
                     if (dist > DISCONNECT_RADIUS) {
                         this.breakConnection(key, existingConn);
                     } else if (!existingConn.isActive) {
-                        // It was closed logically (e.g. eviction), now remove physically
                         this.breakConnection(key, existingConn);
                     }
                 } else {
                     // Check form conditions
                     if (dist < CONNECT_RADIUS) {
                         // Check Scanning & Role Availability
-                        // Logic: One must be scanning (Client) and find the other (Server)
-                        
                         let initiator: BitchatPerson | null = null;
                         
-                        // Try p1 as Client, p2 as Server
                         if (p1.device.isScanning && 
                             p1.device.connectionManager.canAcceptConnection(true) && 
                             p2.device.connectionManager.canAcceptConnection(false)) {
                             initiator = p1;
                         }
-                        // Try p2 as Client, p1 as Server (only if not already connected)
                         else if (p2.device.isScanning && 
                                  p2.device.connectionManager.canAcceptConnection(true) && 
                                  p1.device.connectionManager.canAcceptConnection(false)) {
@@ -238,6 +258,29 @@ export class SimulationEngine {
                 }
             }
         }
+        
+        // Cleanup connections that are now out of range and weren't found by neighbor search
+        // (Because getNeighbors might exclude far away nodes that are still connected but > radius)
+        // Actually, DISCONNECT_RADIUS in getNeighbors handles the break logic for nearby-ish nodes.
+        // But if a node teleports or moves VERY fast, it might not be in neighbor list.
+        // So we should iterate existing connections too for safety.
+        
+        this.globalConnections.forEach((conn, key) => {
+            if (!processedPairs.has(key)) {
+                // We didn't check this connection in the spatial loop.
+                // Check distance manually.
+                
+                if (!conn.endpointA.position || !conn.endpointB.position) return;
+                
+                const dx = conn.endpointA.position.x - conn.endpointB.position.x;
+                const dy = conn.endpointA.position.y - conn.endpointB.position.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                
+                if (dist > DISCONNECT_RADIUS) {
+                    this.breakConnection(key, conn);
+                }
+            }
+        });
     }
     
     private getConnectionKey(id1: string, id2: string): string {

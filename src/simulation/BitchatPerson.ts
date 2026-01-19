@@ -41,7 +41,7 @@ export class BitchatPerson {
     
     // Random Walk Params
     private wanderAngle: number = 0;
-    private readonly MAX_SPEED = 20;
+    private readonly MAX_SPEED = 1.5; // reduced from 20 to 1.5 m/s (~5.4 km/h)
     private readonly WANDER_STRENGTH = 0.5; // rad/s change
     /** Distance threshold to consider waypoint reached */
     private readonly WAYPOINT_THRESHOLD = 2;
