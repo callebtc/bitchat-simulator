@@ -1,6 +1,6 @@
 import { BitchatDevice } from '../BitchatDevice';
 import { PeerManager } from './PeerManager';
-import { BitchatPacket, MessageType, createPacket, SpecialRecipients } from '../../protocol/BitchatPacket';
+import { BitchatPacket, MessageType, createPacket, SpecialRecipients, calculatePacketHash } from '../../protocol/BitchatPacket';
 import { TLV, TLVType } from '../../protocol/TLV';
 import { LogManager } from '../LogManager';
 
@@ -116,8 +116,7 @@ export class BitchatAppSimulator {
     }
     
     private getPacketId(packet: BitchatPacket): string {
-        // Sender + Timestamp is decent unique ID for sim
-        return `${this.toHex(packet.senderID)}_${packet.timestamp}`;
+        return calculatePacketHash(packet);
     }
     
     private markSeen(packet: BitchatPacket) {

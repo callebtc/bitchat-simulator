@@ -47,3 +47,30 @@ export function createPacket(
         route: undefined
     };
 }
+
+function toHex(arr: Uint8Array): string {
+    return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+export function calculatePacketHash(packet: BitchatPacket): string {
+    const parts = [
+        packet.version.toString(),
+        packet.type.toString(),
+        toHex(packet.senderID),
+        packet.recipientID ? toHex(packet.recipientID) : '',
+        packet.timestamp.toString(),
+        toHex(packet.payload),
+        packet.signature ? toHex(packet.signature) : '',
+        packet.route ? packet.route.map(toHex).join('') : ''
+    ];
+    
+    const input = parts.join('|');
+    
+    // Simple FNV-1a hash implementation
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < input.length; i++) {
+        hash ^= input.charCodeAt(i);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16);
+}
