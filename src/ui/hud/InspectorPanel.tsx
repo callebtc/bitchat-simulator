@@ -268,6 +268,26 @@ export const InspectorPanel: React.FC = () => {
                             </select>
                         } 
                     />
+                    <div className="mt-2" />
+                    <DataRow 
+                        label="BT Strength" 
+                        value={
+                            <div className="flex items-center gap-2 w-32">
+                                <input 
+                                    type="range"
+                                    min="0"
+                                    max="100"
+                                    step="1"
+                                    value={device.bluetoothStrength}
+                                    onChange={(e) => device.bluetoothStrength = parseInt(e.target.value)}
+                                    className="flex-1 h-1 accent-cyan-500 cursor-pointer bg-gray-700 rounded-lg appearance-none"
+                                />
+                                <span className="text-[10px] w-6 text-right font-mono text-cyan-400">
+                                    {device.bluetoothStrength.toFixed(0)}
+                                </span>
+                            </div>
+                        } 
+                    />
                 </CollapsibleSection>
 
                 {/* BLE Configuration - Compact */}
@@ -462,6 +482,12 @@ export const InspectorPanel: React.FC = () => {
                                     <span className="text-gray-500">Free Space Loss</span>
                                     <span className="font-mono text-gray-400">-{conn.lastStats.pathLoss.toFixed(1)}dB</span>
                                 </div>
+                                {conn.lastStats.gain !== 0 && (
+                                     <div className="flex justify-between text-[10px]">
+                                        <span className="text-gray-500">Device Gain</span>
+                                        <span className="font-mono text-green-400">+{conn.lastStats.gain.toFixed(1)}dB</span>
+                                    </div>
+                                )}
                                 {conn.lastStats.wallsCrossed > 0 && (
                                     <div className="flex justify-between text-[10px]">
                                         <span className="text-gray-500">Walls ({conn.lastStats.wallsCrossed})</span>

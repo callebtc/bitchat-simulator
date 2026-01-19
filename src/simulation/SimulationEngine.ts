@@ -217,7 +217,13 @@ export class SimulationEngine {
                     // 1. Distance check (optimization)
                     if (dist < CONNECT_RADIUS) {
                         // 2. RSSI Check
-                        const estimatedRSSI = BitchatConnectionBLE.estimateRSSI(p1.position, p2.position, this.environment);
+                        const estimatedRSSI = BitchatConnectionBLE.estimateRSSI(
+                            p1.position, 
+                            p2.position, 
+                            p1.device.bluetoothStrength,
+                            p2.device.bluetoothStrength,
+                            this.environment
+                        );
                         if (estimatedRSSI <= RSSI_CONFIG.DISCONNECT_THRESHOLD) {
                              continue; // Signal too weak to establish
                         }

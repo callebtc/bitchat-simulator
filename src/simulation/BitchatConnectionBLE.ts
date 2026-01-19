@@ -1,7 +1,7 @@
 import { BitchatConnection } from './BitchatConnection';
 import { BitchatPacket } from '../protocol/BitchatPacket';
 import { BitchatDevice } from './BitchatDevice';
-import { EnvironmentManager, calculateLineAttenuationStats, Point2D } from './environment';
+import { EnvironmentManager, calculateLineAttenuationStats } from './environment';
 
 // RSSI Configuration - mutable so UI can modify
 export const RSSI_CONFIG = {
@@ -27,6 +27,7 @@ export interface RSSIStats {
     wallLoss: number;
     materialLoss: number;
     wallsCrossed: number;
+    gain: number;
     totalLoss: number;
     targetRSSI: number;
 }
@@ -52,29 +53,91 @@ export class BitchatConnectionBLE extends BitchatConnection {
         super(endpointA, endpointB, initiator);
         // Initialize noise phase randomly so connections don't all fluctuate in sync
         this.noisePhase = Math.random() * Math.PI * 2;
+        
+        // Initialize RSSI based on actual positions/strengths immediately so we don't start at -40 if we are far away
+        if (endpointA.position && endpointB.position) {
+            const { targetRSSI } = BitchatConnectionBLE.calculateTargetRSSI(
+                endpointA.position, 
+                endpointB.position, 
+                endpointA.bluetoothStrength,
+                endpointB.bluetoothStrength,
+                null // Environment will be set later via property, but this gives a decent baseline
+            );
+            this.rssi = targetRSSI;
+        }
     }
 
     /**
-     * Calculate theoretical RSSI based on distance and environment (no noise/smoothing)
+     * Centralized RSSI calculation logic.
+     * Calculates the theoretical target RSSI based on distance, environment, and device strengths.
      */
-    static estimateRSSI(posA: {x: number, y: number}, posB: {x: number, y: number}, environment: EnvironmentManager | null): number {
-        if (!posA || !posB) return RSSI_CONFIG.DISCONNECT_THRESHOLD - 10;
-
+    static calculateTargetRSSI(
+        posA: {x: number, y: number}, 
+        posB: {x: number, y: number}, 
+        strengthA: number,
+        strengthB: number,
+        environment: EnvironmentManager | null
+    ): RSSIStats {
         const dx = posA.x - posB.x;
         const dy = posA.y - posB.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
         const effectiveDistance = Math.max(distance, 0.1);
 
+        // 1. Path Loss
         const pathLoss = 10 * RSSI_CONFIG.PATH_LOSS_EXPONENT * Math.log10(effectiveDistance);
         let targetRSSI = RSSI_CONFIG.AT_1M - pathLoss;
+
+        // 2. Environment Loss (Walls)
+        let wallLoss = 0;
+        let materialLoss = 0;
+        let wallsCrossed = 0;
 
         if (environment) {
             const buildingsInPath = environment.getBuildingsInPath(posA, posB);
             const stats = calculateLineAttenuationStats(posA, posB, buildingsInPath);
+            wallLoss = stats.wallLoss;
+            materialLoss = stats.materialLoss;
+            wallsCrossed = stats.wallsCrossed;
             targetRSSI -= stats.total;
         }
 
-        return targetRSSI;
+        // 3. Bluetooth Strength Gain
+        // Baseline is 50. 100 is 2x power (+3dB). 25 is 0.5x power (-3dB).
+        // Gain = 10 * log10(strength / 50)
+        // We sum the gains from both sides (TX power boost + RX sensitivity boost equivalent)
+        // Actually, typically TX power matters most. But let's assume 'strength' implies better antenna/chipset for both.
+        // Let's treat it as: Connection Gain = Gain(A) + Gain(B)
+        
+        const gainA = 10 * Math.log10(Math.max(1, strengthA) / 50);
+        const gainB = 10 * Math.log10(Math.max(1, strengthB) / 50);
+        const totalGain = gainA + gainB;
+        
+        targetRSSI += totalGain;
+
+        return {
+            distance: effectiveDistance,
+            pathLoss,
+            wallLoss,
+            materialLoss,
+            wallsCrossed,
+            gain: totalGain,
+            totalLoss: pathLoss + wallLoss + materialLoss - totalGain, // Negative loss is gain? Or just net loss.
+            targetRSSI
+        };
+    }
+
+    /**
+     * Calculate theoretical RSSI based on distance and environment (no noise/smoothing)
+     */
+    static estimateRSSI(
+        posA: {x: number, y: number}, 
+        posB: {x: number, y: number}, 
+        strengthA: number,
+        strengthB: number,
+        environment: EnvironmentManager | null
+    ): number {
+        if (!posA || !posB) return RSSI_CONFIG.DISCONNECT_THRESHOLD - 10;
+        return this.calculateTargetRSSI(posA, posB, strengthA, strengthB, environment).targetRSSI;
     }
 
     send(packet: BitchatPacket, from: BitchatDevice): void {
@@ -113,59 +176,25 @@ export class BitchatConnectionBLE extends BitchatConnection {
             return true; // Can't calculate, keep connection
         }
 
-        // Calculate distance
-        const dx = posA.x - posB.x;
-        const dy = posA.y - posB.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
+        // Use centralized calculation
+        const stats = BitchatConnectionBLE.calculateTargetRSSI(
+            posA, 
+            posB, 
+            this.endpointA.bluetoothStrength,
+            this.endpointB.bluetoothStrength,
+            this.environment
+        );
 
-        // Avoid log(0) for very close devices
-        const effectiveDistance = Math.max(distance, 0.1);
-
-        // Free-space path loss: RSSI = RSSI_1m - 10 * n * log10(d)
-        // Path Loss (dB) = 10 * n * log10(d)
-        // We calculate this relative to 1m
-        const pathLoss = 10 * RSSI_CONFIG.PATH_LOSS_EXPONENT * Math.log10(effectiveDistance);
-        
-        let targetRSSI = RSSI_CONFIG.AT_1M - pathLoss;
-        let wallLoss = 0;
-        let materialLoss = 0;
-        let wallsCrossed = 0;
-
-        // Material attenuation
-        if (this.environment) {
-            const pointA: Point2D = { x: posA.x, y: posA.y };
-            const pointB: Point2D = { x: posB.x, y: posB.y };
-            
-            const buildingsInPath = this.environment.getBuildingsInPath(pointA, pointB);
-            const stats = calculateLineAttenuationStats(pointA, pointB, buildingsInPath);
-            
-            wallLoss = stats.wallLoss;
-            materialLoss = stats.materialLoss;
-            wallsCrossed = stats.wallsCrossed;
-            
-            targetRSSI -= stats.total;
-        }
-
-        // Store target RSSI
-        this.rssiTarget = targetRSSI;
-        
         // Store detailed stats
-        this.lastStats = {
-            distance: effectiveDistance,
-            pathLoss,
-            wallLoss,
-            materialLoss,
-            wallsCrossed,
-            totalLoss: pathLoss + wallLoss + materialLoss,
-            targetRSSI
-        };
+        this.lastStats = stats;
+        this.rssiTarget = stats.targetRSSI;
 
         // Add noise
         this.noisePhase += (now * 0.001) * (Math.PI * 2 / (RSSI_CONFIG.NOISE_PERIOD / 1000));
         const noise = Math.sin(this.noisePhase) * RSSI_CONFIG.NOISE_AMPLITUDE;
 
         // Smooth transition to target with noise
-        const targetWithNoise = targetRSSI + noise;
+        const targetWithNoise = this.rssiTarget + noise;
         this.rssi = this.rssi + (targetWithNoise - this.rssi) * RSSI_CONFIG.SMOOTHING_FACTOR;
 
         // Check disconnect threshold

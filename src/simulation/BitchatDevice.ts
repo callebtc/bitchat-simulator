@@ -36,6 +36,7 @@ export class BitchatDevice {
     
     // Power & Scanning
     powerMode: PowerMode = PowerMode.PERFORMANCE;
+    bluetoothStrength: number = 50; // 0-100, 50 is baseline
     lastScanTime: number = -1;
     // The delay until the next scan, randomized each cycle to prevent synchronization
     currentScanDelay: number = -1;
@@ -128,6 +129,11 @@ export class BitchatDevice {
         const id = new Uint8Array(8);
         crypto.getRandomValues(id);
         const hex = Array.from(id).map(b => b.toString(16).padStart(2, '0')).join('');
-        return new BitchatDevice(id, `User-${hex.substring(0, 4)}`);
+        const device = new BitchatDevice(id, `User-${hex.substring(0, 4)}`);
+        
+        // Randomize bluetooth strength between 25 and 100
+        device.bluetoothStrength = 25 + Math.random() * 75;
+        
+        return device;
     }
 }
