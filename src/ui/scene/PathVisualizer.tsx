@@ -244,15 +244,16 @@ const TargetMarker: React.FC<{ position: Point }> = ({ position }) => {
     );
 };
 
-/** Animated path reveal when a new path is calculated */
+/** Animated path reveal when a new path is calculated - same style as hover */
 const PathAnimation: React.FC<{ path: AnimatedPath; onComplete: () => void }> = ({ path, onComplete }) => {
     const [opacity, setOpacity] = useState(1);
+    const ringRef = useRef<THREE.Mesh>(null);
     
     const pathPoints = useMemo(() => {
         return path.waypoints.map(p => new THREE.Vector3(p.x, p.y, 0.6));
     }, [path.waypoints]);
     
-    useFrame(() => {
+    useFrame(({ clock }) => {
         const elapsed = performance.now() - path.startTime;
         
         if (elapsed > ANIMATION_DURATION) {
@@ -262,23 +263,54 @@ const PathAnimation: React.FC<{ path: AnimatedPath; onComplete: () => void }> = 
         
         if (elapsed < ANIMATION_REVEAL) {
             // Reveal phase: full opacity
-            setOpacity(1);
+            setOpacity(PATH_OPACITY);
         } else {
             // Fade phase
             const fadeProgress = (elapsed - ANIMATION_REVEAL) / (ANIMATION_DURATION - ANIMATION_REVEAL);
-            setOpacity(1 - fadeProgress);
+            setOpacity(PATH_OPACITY * (1 - fadeProgress));
+        }
+        
+        // Pulse the target marker
+        if (ringRef.current) {
+            const pulse = 1 + Math.sin(clock.elapsedTime * 4) * 0.2;
+            ringRef.current.scale.setScalar(pulse);
         }
     });
     
     if (pathPoints.length < 2) return null;
     
     return (
-        <Line
-            points={pathPoints}
-            color={PATH_COLOR}
-            lineWidth={3}
-            transparent
-            opacity={opacity}
-        />
+        <group>
+            {/* Dashed path line - same style as hover */}
+            <Line
+                points={pathPoints}
+                color={PATH_COLOR}
+                lineWidth={2}
+                dashed
+                dashSize={3}
+                gapSize={2}
+                transparent
+                opacity={opacity}
+            />
+            {/* Target marker - same style as hover */}
+            <group position={[path.target.x, path.target.y, 0.6]}>
+                <mesh ref={ringRef}>
+                    <ringGeometry args={[4, 5, 16]} />
+                    <meshBasicMaterial 
+                        color={PATH_COLOR} 
+                        transparent 
+                        opacity={opacity} 
+                    />
+                </mesh>
+                <mesh>
+                    <circleGeometry args={[2, 16]} />
+                    <meshBasicMaterial 
+                        color={PATH_COLOR} 
+                        transparent 
+                        opacity={opacity * 0.5} 
+                    />
+                </mesh>
+            </group>
+        </group>
     );
 };
