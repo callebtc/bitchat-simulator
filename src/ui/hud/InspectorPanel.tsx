@@ -5,7 +5,7 @@ import { BitchatAppSimulator } from '../../simulation/AppLayer/BitchatAppSimulat
 import { MovementMode } from '../../simulation/BitchatPerson';
 
 export const InspectorPanel: React.FC = () => {
-    const { selectedId, selectionType } = useSelection();
+    const { selectedId, selectionType, select } = useSelection();
     const engine = useSimulation();
     const [, forceUpdate] = useState(0);
 
@@ -37,7 +37,7 @@ export const InspectorPanel: React.FC = () => {
             <div className="absolute top-4 right-4 w-80 bg-black/90 text-white p-4 rounded backdrop-blur-md border border-gray-700 max-h-[90vh] overflow-y-auto shadow-xl font-mono text-sm pointer-events-auto">
                 <button 
                     className="absolute top-2 right-2 text-gray-500 hover:text-white transition-colors"
-                    onClick={() => useSelection().select(null, null)} // This won't work because hooks can't be called in callback
+                    onClick={() => select(null, null)}
                 >
                     ✕
                 </button>
@@ -132,6 +132,12 @@ export const InspectorPanel: React.FC = () => {
         
         return (
             <div className="absolute top-4 right-4 w-80 bg-black/90 text-white p-4 rounded backdrop-blur-md border border-gray-700 shadow-xl font-mono text-sm pointer-events-auto">
+                <button 
+                    className="absolute top-2 right-2 text-gray-500 hover:text-white transition-colors"
+                    onClick={() => select(null, null)}
+                >
+                    ✕
+                </button>
                 <h2 className="text-lg font-bold text-green-400 mb-2">Connection</h2>
                 <div className="space-y-2">
                     <div className="bg-gray-900 p-2 rounded">
