@@ -53,8 +53,9 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     useFrame((_, delta) => {
         if (!meshRef.current || !person) return;
         
-        // Decay knock
-        knockScale.current += (1.0 - knockScale.current) * 10 * delta;
+        // Decay knock using stable exponential decay (frame-rate independent)
+        const decay = 1 - Math.exp(-10 * delta);
+        knockScale.current = THREE.MathUtils.lerp(knockScale.current, 1.0, decay);
         
         meshRef.current.position.x = person.position.x;
         meshRef.current.position.y = person.position.y;
