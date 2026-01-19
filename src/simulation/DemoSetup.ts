@@ -37,7 +37,7 @@ export function addRandomNode(engine: SimulationEngine, options?: AddNodeOptions
     const cx = options?.center?.x ?? 0;
     const cy = options?.center?.y ?? 0;
     
-    const p = new BitchatPerson(`p-${Date.now()}`, {
+    const p = new BitchatPerson(`p-${Date.now()}-${Math.floor(Math.random() * 100000)}`, {
         x: cx + (Math.random() - 0.5) * 100, 
         y: cy + (Math.random() - 0.5) * 100
     }, d);

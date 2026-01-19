@@ -66,6 +66,7 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
         
         meshRef.current.position.x = person.position.x;
         meshRef.current.position.y = person.position.y;
+        meshRef.current.position.z = 2; // Render above connection edges
         
         // Apply knock + selection scale + highlight scale
         // Highlight scale: 1.15, Selected: 1.2

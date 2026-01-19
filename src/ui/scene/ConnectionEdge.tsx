@@ -314,7 +314,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                     const y = posA.y + (posB.y - posA.y) * t;
                     
                     return (
-                        <mesh key={p.id} position={[x, y, 0]}>
+                        <mesh key={p.id} position={[x, y, 1]}>
                             <sphereGeometry args={[p.isRelay ? 1.5 : 2.5, 8, 8]} />
                             <meshBasicMaterial color={p.color} />
                         </mesh>
@@ -364,7 +364,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                     const y = posA.y + (posB.y - posA.y) * t;
                     
                     return (
-                        <mesh key={p.id} position={[x, y, 0]}>
+                        <mesh key={p.id} position={[x, y, 1]}>
                             <sphereGeometry args={[p.isRelay ? 1.5 : 2.5, 8, 8]} />
                             <meshBasicMaterial color={p.color} />
                         </mesh>

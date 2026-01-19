@@ -226,6 +226,98 @@ export const MainControlPanel: React.FC = () => {
             initialMode: spawnBusy ? MovementMode.BUSY : undefined
         });
     };
+    
+    // Long-press charging state for adding multiple nodes
+    // Using refs to avoid stale closure issues in event handlers
+    const [chargeCount, setChargeCount] = useState(0);
+    const [isCharging, setIsCharging] = useState(false);
+    const chargeCountRef = useRef(0);
+    const isChargingRef = useRef(false);
+    const chargeIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    const longPressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    
+    const LONG_PRESS_THRESHOLD = 400; // ms before charging starts
+    const CHARGE_INTERVAL = 60; // ms between count increments
+    const MAX_CHARGE = 100;
+    
+    const startCharging = () => {
+        isChargingRef.current = true;
+        chargeCountRef.current = 1;
+        setIsCharging(true);
+        setChargeCount(1);
+        
+        chargeIntervalRef.current = setInterval(() => {
+            chargeCountRef.current = Math.min(chargeCountRef.current + 1, MAX_CHARGE);
+            setChargeCount(chargeCountRef.current);
+        }, CHARGE_INTERVAL);
+    };
+    
+    const handleAddNodePointerDown = (e: React.PointerEvent) => {
+        e.preventDefault();
+        // Start long-press timer
+        longPressTimeoutRef.current = setTimeout(() => {
+            startCharging();
+        }, LONG_PRESS_THRESHOLD);
+    };
+    
+    const handleAddNodePointerUp = () => {
+        // Clear long-press timer
+        if (longPressTimeoutRef.current) {
+            clearTimeout(longPressTimeoutRef.current);
+            longPressTimeoutRef.current = null;
+        }
+        
+        // Clear charging interval
+        if (chargeIntervalRef.current) {
+            clearInterval(chargeIntervalRef.current);
+            chargeIntervalRef.current = null;
+        }
+        
+        // Use refs for current values (avoids stale closure)
+        if (isChargingRef.current && chargeCountRef.current > 0) {
+            // Add multiple nodes
+            const countToAdd = chargeCountRef.current;
+            for (let i = 0; i < countToAdd; i++) {
+                addRandomNode(engine, { 
+                    center: viewCenter,
+                    initialMode: spawnBusy ? MovementMode.BUSY : undefined
+                });
+            }
+        } else {
+            // Single click - add one node
+            handleAddNode();
+        }
+        
+        // Reset state
+        isChargingRef.current = false;
+        chargeCountRef.current = 0;
+        setIsCharging(false);
+        setChargeCount(0);
+    };
+    
+    const handleAddNodePointerLeave = () => {
+        // Cancel charging if pointer leaves button
+        if (longPressTimeoutRef.current) {
+            clearTimeout(longPressTimeoutRef.current);
+            longPressTimeoutRef.current = null;
+        }
+        if (chargeIntervalRef.current) {
+            clearInterval(chargeIntervalRef.current);
+            chargeIntervalRef.current = null;
+        }
+        isChargingRef.current = false;
+        chargeCountRef.current = 0;
+        setIsCharging(false);
+        setChargeCount(0);
+    };
+    
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            if (longPressTimeoutRef.current) clearTimeout(longPressTimeoutRef.current);
+            if (chargeIntervalRef.current) clearInterval(chargeIntervalRef.current);
+        };
+    }, []);
 
     const handleTurnAllBusy = () => {
         engine.getAllPeople().forEach(person => {
@@ -277,10 +369,26 @@ export const MainControlPanel: React.FC = () => {
                 {/* Actions - moved below counters */}
                 <div className="flex gap-1.5">
                     <button 
-                        className="flex-1 bg-cyan-900/30 hover:bg-cyan-800/50 text-cyan-200 px-2 py-1.5 rounded text-[10px] font-bold border border-cyan-800/50 transition-all hover:shadow-[0_0_10px_rgba(34,211,238,0.2)]"
-                        onClick={handleAddNode}
+                        className={`flex-1 px-2 py-1.5 rounded text-[10px] font-bold border transition-all relative overflow-hidden select-none ${
+                            isCharging 
+                                ? 'bg-cyan-600/50 text-white border-cyan-400 shadow-[0_0_20px_rgba(34,211,238,0.4)]' 
+                                : 'bg-cyan-900/30 hover:bg-cyan-800/50 text-cyan-200 border-cyan-800/50 hover:shadow-[0_0_10px_rgba(34,211,238,0.2)]'
+                        }`}
+                        onPointerDown={handleAddNodePointerDown}
+                        onPointerUp={handleAddNodePointerUp}
+                        onPointerLeave={handleAddNodePointerLeave}
+                        onContextMenu={(e) => e.preventDefault()}
                     >
-                        + ADD NODE
+                        {/* Charging progress bar */}
+                        {isCharging && (
+                            <div 
+                                className="absolute inset-0 bg-cyan-400/30 transition-all"
+                                style={{ width: `${(chargeCount / MAX_CHARGE) * 100}%` }}
+                            />
+                        )}
+                        <span className="relative z-10">
+                            {isCharging ? `ADD +${chargeCount} NODES` : '+ ADD NODE'}
+                        </span>
                     </button>
                     <button 
                         className="flex-1 bg-red-900/20 hover:bg-red-900/40 text-red-300 px-2 py-1.5 rounded text-[10px] font-bold border border-red-900/50 transition-all"
