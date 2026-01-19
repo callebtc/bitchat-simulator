@@ -1,6 +1,6 @@
 # Bitchat Simulator
 
-A high-fidelity 3D simulation environment for testing and visualizing the Bitchat mesh networking protocol. Grounded in real-world physics and geographic data.
+A simulated 3D sandbox environment for testing and visualizing the Bitchat mesh networking protocol. Grounded in real-world physics and geographic data.
 
 ## Overview
 
