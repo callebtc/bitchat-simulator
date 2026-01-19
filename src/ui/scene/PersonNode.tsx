@@ -12,7 +12,7 @@ interface PersonNodeProps {
 
 export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     const engine = useSimulation();
-    const { selectedId, select, setDragging, highlightedId } = useSelection();
+    const { selectedId, select, setDragging, highlightedId, setHighlightedId } = useSelection();
     const meshRef = useRef<THREE.Group>(null);
     
     // Data
@@ -60,6 +60,7 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
         meshRef.current.position.y = person.position.y;
         
         // Apply knock + selection scale + highlight scale
+        // Highlight scale: 1.15, Selected: 1.2
         const baseScale = isSelected ? 1.2 : (isHighlighted ? 1.15 : 1.0);
         meshRef.current.scale.setScalar(baseScale * knockScale.current);
     });
@@ -74,9 +75,27 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
         }
     };
 
+    const handlePointerEnter = (e: ThreeEvent<PointerEvent>) => {
+        e.stopPropagation();
+        setHighlightedId(peerIdHex);
+        document.body.style.cursor = 'pointer';
+    };
+
+    const handlePointerLeave = (e: ThreeEvent<PointerEvent>) => {
+        e.stopPropagation();
+        if (highlightedId === peerIdHex) {
+            setHighlightedId(null);
+        }
+        document.body.style.cursor = 'default';
+    };
+
     return (
         <group ref={meshRef} scale={isSelected ? 1.2 : 1}>
-            <mesh onPointerDown={handlePointerDown}>
+            <mesh 
+                onPointerDown={handlePointerDown}
+                onPointerEnter={handlePointerEnter}
+                onPointerLeave={handlePointerLeave}
+            >
                 <circleGeometry args={[5, 32]} />
                 <meshBasicMaterial 
                     color={color} 
