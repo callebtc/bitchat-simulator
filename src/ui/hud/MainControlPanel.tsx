@@ -1,6 +1,8 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { useSimulation } from '../context/SimulationContext';
+import { useSelection } from '../context/SelectionContext';
 import { addRandomNode, setupDemo } from '../../simulation/DemoSetup';
+import { usePersistedState } from '../../utils/usePersistedState';
 
 // Types for history data
 interface HistoryPoint {
@@ -55,8 +57,9 @@ const TinyGraph: React.FC<{ data: HistoryPoint[], color: string, label: string, 
 
 export const MainControlPanel: React.FC = () => {
     const engine = useSimulation();
+    const { viewCenter } = useSelection();
     const [currentTime, setCurrentTime] = useState(Date.now());
-    const [isCollapsed, setIsCollapsed] = useState(false);
+    const [isCollapsed, setIsCollapsed] = usePersistedState('main_panel_collapsed', false);
     
     // Stats Refs (to avoid re-renders on every packet)
     const statsRef = useRef({
@@ -239,7 +242,7 @@ export const MainControlPanel: React.FC = () => {
                 <div className="flex gap-1.5 pt-1">
                     <button 
                         className="flex-1 bg-cyan-900/30 hover:bg-cyan-800/50 text-cyan-200 px-2 py-1.5 rounded text-[10px] font-bold border border-cyan-800/50 transition-all hover:shadow-[0_0_10px_rgba(34,211,238,0.2)]"
-                        onClick={() => addRandomNode(engine)}
+                        onClick={() => addRandomNode(engine, viewCenter)}
                     >
                         + ADD NODE
                     </button>

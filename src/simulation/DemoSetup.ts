@@ -28,15 +28,18 @@ export function setupDemo(engine: SimulationEngine, count: number = 5) {
     }
 }
 
-export function addRandomNode(engine: SimulationEngine) {
+export function addRandomNode(engine: SimulationEngine, center?: { x: number, y: number }) {
     const d = BitchatDevice.createRandom();
     d.nickname = `User-${d.peerIDHex.substring(0,4)}`;
     const sim = new BitchatAppSimulator(d);
     d.setAppSimulator(sim);
     
+    const cx = center?.x ?? 0;
+    const cy = center?.y ?? 0;
+    
     const p = new BitchatPerson(`p-${Date.now()}`, {
-        x: (Math.random() - 0.5) * 100, 
-        y: (Math.random() - 0.5) * 100
+        x: cx + (Math.random() - 0.5) * 100, 
+        y: cy + (Math.random() - 0.5) * 100
     }, d);
      p.setVelocity({
         x: (Math.random() - 0.5) * 10,

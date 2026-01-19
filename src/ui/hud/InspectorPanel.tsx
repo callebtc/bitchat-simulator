@@ -6,15 +6,17 @@ import { MovementMode } from '../../simulation/BitchatPerson';
 import { getPeerColor } from '../../utils/colorUtils';
 import { PowerMode } from '../../simulation/BitchatDevice';
 import { useLayout } from '../context/LayoutContext';
+import { usePersistedState } from '../../utils/usePersistedState';
 
 // Helper for Collapsible Sections
 const CollapsibleSection: React.FC<{ 
     title: string; 
     children: React.ReactNode; 
+    persistenceKey: string;
     defaultOpen?: boolean;
     accentColor?: string;
-}> = ({ title, children, defaultOpen = true, accentColor = 'text-gray-500' }) => {
-    const [isOpen, setIsOpen] = useState(defaultOpen);
+}> = ({ title, children, persistenceKey, defaultOpen = true, accentColor = 'text-gray-500' }) => {
+    const [isOpen, setIsOpen] = usePersistedState(persistenceKey, defaultOpen);
 
     return (
         <div className="border-t border-gray-800">
@@ -77,7 +79,7 @@ const PanelWrapper: React.FC<{ children: React.ReactNode; title: string; subtitl
 );
 
 export const InspectorPanel: React.FC = () => {
-    const { selectedId, selectionType, select, setChatRecipientId } = useSelection();
+    const { selectedId, selectionType, select, setChatRecipientId, setHighlightedId } = useSelection();
     const { bottomPanelHeight } = useLayout();
     const engine = useSimulation();
     const [, forceUpdate] = useState(0);
@@ -132,7 +134,7 @@ export const InspectorPanel: React.FC = () => {
                 )}
 
                 {/* Simulation Settings */}
-                <CollapsibleSection title="DEVICE STATE" accentColor="text-cyan-600">
+                <CollapsibleSection title="DEVICE STATE" accentColor="text-cyan-600" persistenceKey="inspector_device_state">
                     <DataRow 
                         label="Announcing" 
                         value={
@@ -166,7 +168,7 @@ export const InspectorPanel: React.FC = () => {
                 </CollapsibleSection>
 
                 {/* Connection Limits */}
-                <CollapsibleSection title="BLE CONFIG" accentColor="text-gray-500">
+                <CollapsibleSection title="BLE CONFIG" accentColor="text-gray-500" persistenceKey="inspector_ble_config">
                      <div className="grid grid-cols-3 gap-1.5 text-[10px] text-center">
                         <div className="bg-gray-900 rounded p-1.5 border border-gray-800">
                             <div className="text-gray-600 mb-1">MAX CL</div>
@@ -198,27 +200,16 @@ export const InspectorPanel: React.FC = () => {
                     </div>
                 </CollapsibleSection>
 
-                {/* Active Connections */}
-                <CollapsibleSection title={`CONNECTIONS (${conns.length})`} accentColor="text-green-600">
-                    <div className="space-y-1">
-                        {conns.map(p => (
-                            <div key={p.peerIDHex} className="flex justify-between items-center text-xs bg-gray-900/30 p-1.5 rounded border border-gray-800/50">
-                                <span className="font-bold" style={{ color: getPeerColor(p.peerIDHex) }}>{p.nickname}</span>
-                                <span className="font-mono text-gray-600 text-[10px]">{p.peerIDHex.substring(0,6)}</span>
-                            </div>
-                        ))}
-                        {conns.length === 0 && <div className="text-[10px] text-gray-600 italic text-center py-2">No active physical links</div>}
-                    </div>
-                </CollapsibleSection>
-
-                {/* Known Peers */}
-                <CollapsibleSection title={`ROUTING TABLE (${knownPeers.length})`} accentColor="text-orange-600">
+                 {/* Known Peers */}
+                 <CollapsibleSection title={`PEER LIST (${knownPeers.length})`} accentColor="text-orange-600" persistenceKey="inspector_peer_list">
                      <div className="space-y-1">
                         {knownPeers.map(p => (
                             <div 
                                 key={p.id} 
                                 className="group flex justify-between items-center text-xs p-1.5 rounded border border-transparent hover:bg-gray-800/50 hover:border-gray-700 cursor-pointer transition-all"
                                 onClick={() => setChatRecipientId(p.id)}
+                                onMouseEnter={() => setHighlightedId(p.id)}
+                                onMouseLeave={() => setHighlightedId(null)}
                             >
                                 <div className="flex flex-col">
                                     <div className="flex items-center gap-2">
@@ -237,6 +228,37 @@ export const InspectorPanel: React.FC = () => {
                         {knownPeers.length === 0 && <div className="text-[10px] text-gray-600 italic text-center py-2">Network is empty</div>}
                     </div>
                 </CollapsibleSection>
+
+                {/* Active Connections */}
+                <CollapsibleSection title={`CONNECTIONS (${conns.length})`} accentColor="text-green-600" persistenceKey="inspector_node_connections">
+                    <div className="space-y-1">
+                        {conns.map(p => (
+                            <div 
+                                key={p.peerIDHex} 
+                                className="flex justify-between items-center text-xs bg-gray-900/30 p-1.5 rounded border border-gray-800/50 hover:bg-gray-800/50 transition-colors"
+                                onMouseEnter={() => setHighlightedId(p.peerIDHex)}
+                                onMouseLeave={() => setHighlightedId(null)}
+                            >
+                                <span className="font-bold" style={{ color: getPeerColor(p.peerIDHex) }}>{p.nickname}</span>
+                                <span className="font-mono text-gray-600 text-[10px]">{p.peerIDHex.substring(0,6)}</span>
+                            </div>
+                        ))}
+                        {conns.length === 0 && <div className="text-[10px] text-gray-600 italic text-center py-2">No active physical links</div>}
+                    </div>
+                </CollapsibleSection>
+
+                {/* Actions */}
+                <div className="mt-4 pt-2 border-t border-gray-800">
+                    <button 
+                        className="w-full bg-red-900/20 hover:bg-red-900/40 text-red-400 hover:text-red-300 text-[10px] py-2 rounded border border-red-900/50 transition-all font-bold tracking-wider"
+                        onClick={() => {
+                            engine.removePerson(selectedId);
+                            select(null, null);
+                        }}
+                    >
+                        REMOVE NODE
+                    </button>
+                </div>
             </PanelWrapper>
         );
     }
@@ -275,7 +297,7 @@ export const InspectorPanel: React.FC = () => {
                     </div>
                 </div>
 
-                <CollapsibleSection title="TRAFFIC STATS" accentColor="text-cyan-600">
+                <CollapsibleSection title="TRAFFIC STATS" accentColor="text-cyan-600" persistenceKey="inspector_conn_traffic">
                     <div className="grid grid-cols-2 gap-2 mb-2">
                         <div className="bg-gray-900/30 p-2 rounded border border-gray-800">
                             <div className="text-[9px] text-gray-500 mb-1">TOTAL PACKETS</div>
@@ -288,7 +310,7 @@ export const InspectorPanel: React.FC = () => {
                     </div>
                 </CollapsibleSection>
 
-                 <CollapsibleSection title="DEBUG INFO" accentColor="text-gray-600">
+                 <CollapsibleSection title="DEBUG INFO" accentColor="text-gray-600" persistenceKey="inspector_conn_debug">
                     <DataRow label="Initiator" value={conn.initiator === conn.endpointA ? 'Endpoint A' : 'Endpoint B'} />
                     <DataRow label="Created At" value="--:--:--" />
                     <DataRow label="Last Activity" value="0s ago" />

@@ -12,7 +12,7 @@ interface PersonNodeProps {
 
 export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     const engine = useSimulation();
-    const { selectedId, select, setDragging } = useSelection();
+    const { selectedId, select, setDragging, highlightedId } = useSelection();
     const meshRef = useRef<THREE.Group>(null);
     
     // Data
@@ -21,8 +21,9 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     
     // Derived state
     const isSelected = selectedId === id;
+    const isHighlighted = highlightedId === peerIdHex;
     const isSomethingSelected = selectedId !== null;
-    const isDimmed = isSomethingSelected && !isSelected;
+    const isDimmed = isSomethingSelected && !isSelected && !isHighlighted;
     
     // Color (Use Peer ID)
     const color = useMemo(() => getPeerColor(peerIdHex), [peerIdHex]);
@@ -58,8 +59,8 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
         meshRef.current.position.x = person.position.x;
         meshRef.current.position.y = person.position.y;
         
-        // Apply knock + selection scale
-        const baseScale = isSelected ? 1.2 : 1.0;
+        // Apply knock + selection scale + highlight scale
+        const baseScale = isSelected ? 1.2 : (isHighlighted ? 1.15 : 1.0);
         meshRef.current.scale.setScalar(baseScale * knockScale.current);
     });
     
@@ -84,17 +85,17 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
                 />
             </mesh>
             <mesh>
-                 <ringGeometry args={[5, isSelected ? 6 : 5.2, 32]} />
+                 <ringGeometry args={[5, isSelected ? 6 : (isHighlighted ? 5.8 : 5.2), 32]} />
                  <meshBasicMaterial 
-                    color={isSelected ? 'white' : 'black'} 
+                    color={isSelected || isHighlighted ? 'white' : 'black'} 
                     transparent
                     opacity={isDimmed ? 0.4 : 1.0}
-                 />
+                />
             </mesh>
             <Text 
                 position={[0, -8, 0]} 
                 fontSize={4}
-                color="white"
+                color={isHighlighted ? "#ffff00" : "white"}
                 anchorX="center"
                 anchorY="top"
                 fillOpacity={isDimmed ? 0.4 : 1.0}

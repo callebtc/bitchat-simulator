@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Canvas } from '@react-three/fiber';
+import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, OrthographicCamera } from '@react-three/drei';
 import { useSimulation } from '../context/SimulationContext';
 import { useSelection } from '../context/SelectionContext';
@@ -7,6 +7,18 @@ import { PersonNode } from './PersonNode';
 import { ConnectionEdge } from './ConnectionEdge';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
 import { InteractionPlane } from './InteractionPlane';
+import * as THREE from 'three';
+
+const ViewTracker: React.FC = () => {
+    const { camera } = useThree();
+    const { setViewCenter } = useSelection();
+    
+    useFrame(() => {
+        setViewCenter({ x: camera.position.x, y: camera.position.y });
+    });
+    
+    return null;
+};
 
 export const Scene: React.FC = () => {
     const engine = useSimulation();
@@ -56,7 +68,16 @@ export const Scene: React.FC = () => {
         <div className="w-full h-screen bg-gray-900">
             <Canvas>
                 <OrthographicCamera makeDefault position={[0, 0, 100]} zoom={2} />
-                <OrbitControls enableRotate={false} enabled={!isDragging} />
+                <OrbitControls 
+                    enableRotate={false} 
+                    enabled={!isDragging} 
+                    mouseButtons={{
+                        LEFT: THREE.MOUSE.PAN,
+                        MIDDLE: THREE.MOUSE.DOLLY,
+                        RIGHT: THREE.MOUSE.PAN
+                    }}
+                />
+                <ViewTracker />
                 
                 <ambientLight intensity={0.5} />
                 

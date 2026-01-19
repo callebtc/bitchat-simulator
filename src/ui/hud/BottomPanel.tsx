@@ -1,14 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { LogView } from './LogView';
 import { ChatPanel } from './ChatPanel';
 import { useSelection } from '../context/SelectionContext';
 import { useLayout } from '../context/LayoutContext';
+import { usePersistedState } from '../../utils/usePersistedState';
 
 export const BottomPanel: React.FC = () => {
     const { selectedId } = useSelection();
     const { setBottomPanelHeight } = useLayout();
-    const [isCollapsed, setIsCollapsed] = useState(false);
-    const [activeTab, setActiveTab] = useState<'LOGS' | 'CHAT'>('LOGS');
+    const [isCollapsed, setIsCollapsed] = usePersistedState('bottom_panel_collapsed', false);
+    const [activeTab, setActiveTab] = usePersistedState<'LOGS' | 'CHAT'>('bottom_panel_tab', 'LOGS');
 
     useEffect(() => {
         setBottomPanelHeight(isCollapsed ? 32 : 256);
