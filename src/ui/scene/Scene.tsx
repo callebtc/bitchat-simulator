@@ -6,6 +6,7 @@ import { useSelection } from '../context/SelectionContext';
 import { PersonNode } from './PersonNode';
 import { ConnectionEdge } from './ConnectionEdge';
 import { BuildingLayer } from './BuildingLayer';
+import { PathVisualizer } from './PathVisualizer';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
 import { InteractionPlane } from './InteractionPlane';
 import * as THREE from 'three';
@@ -94,6 +95,9 @@ export const Scene: React.FC = () => {
                 {connections.map(conn => (
                     <ConnectionEdge key={conn.id} connection={conn} />
                 ))}
+                
+                {/* Path visualization for hover/animation */}
+                <PathVisualizer />
             </Canvas>
         </div>
     );

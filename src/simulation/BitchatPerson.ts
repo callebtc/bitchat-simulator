@@ -1,13 +1,16 @@
 import { BitchatDevice } from './BitchatDevice';
 import { Point, Vector2 } from './types';
 import { LogManager } from './LogManager';
-import { EnvironmentManager } from './environment';
+import { EnvironmentManager, PathFinder, PathResult } from './environment';
 
 export enum MovementMode {
     STILL = 'STILL',
     RANDOM_WALK = 'RANDOM_WALK',
     TARGET = 'TARGET'
 }
+
+/** Callback for when a path is calculated */
+export type PathCalculatedCallback = (path: Point[], target: Point) => void;
 
 export class BitchatPerson {
     id: string;
@@ -19,14 +22,27 @@ export class BitchatPerson {
     /** Environment reference for collision detection (set by SimulationEngine) */
     environment?: EnvironmentManager;
     
+    /** PathFinder reference (set by SimulationEngine) */
+    pathFinder?: PathFinder;
+    
     // Movement
     mode: MovementMode = MovementMode.STILL;
     target: Point | null = null;
+    
+    /** Current path waypoints */
+    path: Point[] | null = null;
+    /** Index of current waypoint being navigated to */
+    currentWaypointIndex: number = 0;
+    
+    /** Callback when path is calculated (for UI animation) */
+    onPathCalculated?: PathCalculatedCallback;
     
     // Random Walk Params
     private wanderAngle: number = 0;
     private readonly MAX_SPEED = 20;
     private readonly WANDER_STRENGTH = 0.5; // rad/s change
+    /** Distance threshold to consider waypoint reached */
+    private readonly WAYPOINT_THRESHOLD = 2;
 
     constructor(id: string, position: Point, device: BitchatDevice) {
         this.id = id;
@@ -57,7 +73,44 @@ export class BitchatPerson {
     
     setTarget(p: Point) {
         this.target = p;
+        this.path = null;
+        this.currentWaypointIndex = 0;
+        
+        // Calculate path if we have environment with buildings
+        if (this.pathFinder && this.environment && this.environment.getBuildingCount() > 0) {
+            const result: PathResult = this.pathFinder.findPath(
+                { x: this.position.x, y: this.position.y },
+                { x: p.x, y: p.y }
+            );
+            
+            if (result.found && result.waypoints.length > 1) {
+                // Convert Point2D to Point (they're compatible)
+                this.path = result.waypoints.map(wp => ({ x: wp.x, y: wp.y }));
+                // Start from waypoint 1 (waypoint 0 is our current position)
+                this.currentWaypointIndex = 1;
+                
+                // Notify UI for animation
+                if (this.onPathCalculated) {
+                    this.onPathCalculated(this.path, p);
+                }
+            }
+        }
+        
         this.setMode(MovementMode.TARGET);
+    }
+    
+    /**
+     * Get remaining path waypoints (for visualization).
+     */
+    getRemainingPath(): Point[] | null {
+        if (!this.path || this.currentWaypointIndex >= this.path.length) {
+            return null;
+        }
+        // Return current position plus remaining waypoints
+        return [
+            { x: this.position.x, y: this.position.y },
+            ...this.path.slice(this.currentWaypointIndex)
+        ];
     }
 
     update(dt: number) {
@@ -122,19 +175,51 @@ export class BitchatPerson {
     private updateTargetSeek(_dt: number) {
         if (!this.target) return;
         
-        const dx = this.target.x - this.position.x;
-        const dy = this.target.y - this.position.y;
-        const dist = Math.sqrt(dx*dx + dy*dy);
+        // Determine current navigation target (next waypoint or final target)
+        let navTarget: Point;
         
-        if (dist < 1) {
-            // Arrived
-            this.velocity = {x: 0, y: 0};
-            this.mode = MovementMode.STILL;
-            this.target = null;
-            return;
+        if (this.path && this.currentWaypointIndex < this.path.length) {
+            navTarget = this.path[this.currentWaypointIndex];
+        } else {
+            navTarget = this.target;
         }
         
-        const speed = Math.min(this.MAX_SPEED, dist * 2); // Slow down arrival
+        const dx = navTarget.x - this.position.x;
+        const dy = navTarget.y - this.position.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        // Check if we've reached the current waypoint
+        if (dist < this.WAYPOINT_THRESHOLD) {
+            if (this.path && this.currentWaypointIndex < this.path.length - 1) {
+                // Move to next waypoint
+                this.currentWaypointIndex++;
+                return; // Will navigate to next waypoint on next update
+            } else {
+                // Check if we've reached final target
+                const dxFinal = this.target.x - this.position.x;
+                const dyFinal = this.target.y - this.position.y;
+                const distFinal = Math.sqrt(dxFinal * dxFinal + dyFinal * dyFinal);
+                
+                if (distFinal < 1) {
+                    // Arrived at final destination
+                    this.velocity = { x: 0, y: 0 };
+                    this.mode = MovementMode.STILL;
+                    this.target = null;
+                    this.path = null;
+                    this.currentWaypointIndex = 0;
+                    return;
+                }
+            }
+        }
+        
+        // Calculate speed (slow down on arrival)
+        const distToFinal = this.target ? 
+            Math.sqrt(
+                (this.target.x - this.position.x) ** 2 + 
+                (this.target.y - this.position.y) ** 2
+            ) : dist;
+        
+        const speed = Math.min(this.MAX_SPEED, distToFinal * 2);
         this.velocity.x = (dx / dist) * speed;
         this.velocity.y = (dy / dist) * speed;
     }

@@ -4,16 +4,19 @@ import { EventBus } from '../events/EventBus';
 import { BitchatConnection } from './BitchatConnection';
 import { BitchatConnectionBLE } from './BitchatConnectionBLE';
 import { LogManager } from './LogManager';
-import { EnvironmentManager } from './environment';
+import { EnvironmentManager, PathFinder } from './environment';
 
 const CONNECT_RADIUS = 100;
 const DISCONNECT_RADIUS = 110;
+/** Padding distance from building walls for pathfinding (meters) */
+const PATHFINDING_PADDING = 3;
 
 export class SimulationEngine {
     spatial: SpatialManager;
     events: EventBus;
     logManager: LogManager;
     environment: EnvironmentManager;
+    pathFinder: PathFinder;
     
     private isRunning: boolean = false;
     private lastTime: number = 0;
@@ -27,16 +30,29 @@ export class SimulationEngine {
         this.events = new EventBus();
         this.logManager = new LogManager();
         this.environment = new EnvironmentManager();
+        this.pathFinder = new PathFinder();
     }
 
     addPerson(person: BitchatPerson) {
         person.setLogger(this.logManager);
         // Set environment reference for collision detection
         person.environment = this.environment;
+        // Set pathfinder reference for navigation
+        person.pathFinder = this.pathFinder;
         this.people.set(person.id, person);
         this.spatial.addPerson(person);
         this.events.emit('person_added', person);
         this.logManager.log('INFO', 'GLOBAL', `Added person ${person.id}`);
+    }
+    
+    /**
+     * Rebuild the pathfinding graph.
+     * Should be called when environment changes.
+     */
+    rebuildPathfindingGraph(): void {
+        const buildings = this.environment.getBuildings();
+        this.pathFinder.buildVisibilityGraph(buildings, PATHFINDING_PADDING);
+        this.logManager.log('INFO', 'GLOBAL', `Pathfinding graph rebuilt with ${this.pathFinder.getNodeCount()} nodes`);
     }
 
     removePerson(id: string) {

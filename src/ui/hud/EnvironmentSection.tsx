@@ -52,6 +52,7 @@ export const EnvironmentSection: React.FC = () => {
                 if (preset.radius === 0) {
                     // "None" selected
                     engine.environment.clear();
+                    engine.rebuildPathfindingGraph();
                     engine.events.emit('environment_loaded', { buildingCount: 0 });
                     forceUpdate({});
                     setIsLoading(false);
@@ -66,6 +67,9 @@ export const EnvironmentSection: React.FC = () => {
             
             const geojson = await fetchBuildingsAround(lat, lon, radius);
             engine.environment.loadFromGeoJSON(geojson, lat, lon);
+            
+            // Rebuild pathfinding graph for navigation
+            engine.rebuildPathfindingGraph();
             
             // Emit event so BuildingLayer and other components update
             engine.events.emit('environment_loaded', { 
@@ -84,6 +88,8 @@ export const EnvironmentSection: React.FC = () => {
 
     const handleClear = () => {
         engine.environment.clear();
+        // Rebuild pathfinding graph (will be empty)
+        engine.rebuildPathfindingGraph();
         engine.events.emit('environment_loaded', { buildingCount: 0 });
         forceUpdate({});
     };
