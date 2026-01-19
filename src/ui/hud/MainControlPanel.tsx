@@ -7,6 +7,7 @@ import { usePersistedState } from '../../utils/usePersistedState';
 import { EnvironmentSection } from './EnvironmentSection';
 import { useLayout } from '../context/LayoutContext';
 import { useVisualization } from '../context/VisualizationContext';
+import { PerformanceStats } from './PerformanceStats';
 
 // Types for history data
 interface HistoryPoint {
@@ -492,8 +493,11 @@ export const MainControlPanel: React.FC = () => {
                     }
                 >
                     <div className="space-y-2">
+                        {/* Performance Stats */}
+                        <PerformanceStats />
+                        
                         {/* Packet Stats */}
-                        <div className="space-y-1">
+                        <div className="space-y-1 border-t border-gray-800 pt-2">
                             <div className="text-[10px] text-gray-500 uppercase tracking-wider border-b border-gray-800 pb-1 mb-1">Packet Traffic</div>
                             <div className="grid grid-cols-4 gap-1 text-center">
                                 <div>
