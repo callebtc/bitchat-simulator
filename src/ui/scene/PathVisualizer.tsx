@@ -118,7 +118,11 @@ const HoverVisualization: React.FC<{ person: BitchatPerson }> = ({ person }) => 
             const vy = person.velocity.y;
             const speed = Math.sqrt(vx * vx + vy * vy);
             
-            if (speed > 0.1) {
+            // Only show arrow if speed is significant (> 0.1)
+            const isVisible = speed > 0.1;
+            arrowRef.current.visible = isVisible;
+            
+            if (isVisible) {
                 const angle = Math.atan2(vy, vx);
                 arrowRef.current.rotation.z = angle;
                 
@@ -189,24 +193,20 @@ const HoverVisualization: React.FC<{ person: BitchatPerson }> = ({ person }) => 
 
 /** Arrow shape for velocity visualization */
 const VelocityArrow: React.FC = () => {
+    const points = useMemo(() => [
+        new THREE.Vector3(0, 0, 1),
+        new THREE.Vector3(10, 0, 1),
+        new THREE.Vector3(10 - ARROW_HEAD_SIZE, ARROW_HEAD_SIZE / 2, 1),
+        new THREE.Vector3(10, 0, 1),
+        new THREE.Vector3(10 - ARROW_HEAD_SIZE, -ARROW_HEAD_SIZE / 2, 1)
+    ], []);
+
     return (
-        <line>
-            <bufferGeometry>
-                <bufferAttribute
-                    attach="attributes-position"
-                    count={5}
-                    array={new Float32Array([
-                        0, 0, 1,
-                        10, 0, 1,
-                        10 - ARROW_HEAD_SIZE, ARROW_HEAD_SIZE / 2, 1,
-                        10, 0, 1,
-                        10 - ARROW_HEAD_SIZE, -ARROW_HEAD_SIZE / 2, 1,
-                    ])}
-                    itemSize={3}
-                />
-            </bufferGeometry>
-            <lineBasicMaterial color={VELOCITY_COLOR} linewidth={2} />
-        </line>
+        <Line 
+            points={points} 
+            color={VELOCITY_COLOR} 
+            lineWidth={3} 
+        />
     );
 };
 

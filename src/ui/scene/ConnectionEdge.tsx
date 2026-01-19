@@ -1,5 +1,6 @@
 import React, { useRef, useMemo, useState, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
+import { Line } from '@react-three/drei';
 import { useSimulation } from '../context/SimulationContext';
 import * as THREE from 'three';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
@@ -41,8 +42,7 @@ function rssiToColor(rssi: number): THREE.Color {
 }
 
 export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) => {
-    const geoRef = useRef<THREE.BufferGeometry>(null);
-    const materialRef = useRef<THREE.LineBasicMaterial>(null);
+    const lineRef = useRef<any>(null); // Reference to the Line (Line2) mesh
     const { selectedId, select } = useSelection();
     const engine = useSimulation();
     
@@ -113,25 +113,42 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
 
     // Initial positions buffer
     const positions = useMemo(() => new Float32Array(6), []);
+    
+    // Initial points for Line component
+    const initialPoints = useMemo(() => {
+        const posA = connection.endpointA.position || { x: 0, y: 0 };
+        const posB = connection.endpointB.position || { x: 0, y: 0 };
+        return [
+            new THREE.Vector3(posA.x, posA.y, 0),
+            new THREE.Vector3(posB.x, posB.y, 0)
+        ];
+    }, []);
 
     useFrame((_state, delta) => {
         // Update Line Geometry
-        if (geoRef.current) {
+        if (lineRef.current) {
             const posA = connection.endpointA.position;
             const posB = connection.endpointB.position;
 
             if (posA && posB) {
                 positions[0] = posA.x; positions[1] = posA.y; positions[2] = 0;
                 positions[3] = posB.x; positions[4] = posB.y; positions[5] = 0;
-                geoRef.current.attributes.position.needsUpdate = true;
+                
+                // Update Line2 geometry
+                // Line from drei uses Line2 which has geometry with setPositions
+                if (lineRef.current.geometry?.setPositions) {
+                    lineRef.current.geometry.setPositions(positions);
+                }
             }
         }
 
         // Update line color based on RSSI (if BLE connection)
-        if (materialRef.current && !isHighlighted && !isDimmed) {
+        if (lineRef.current && !isHighlighted && !isDimmed) {
             if (connection instanceof BitchatConnectionBLE) {
                 const rssiColor = rssiToColor(connection.rssi);
-                materialRef.current.color = rssiColor;
+                if (lineRef.current.material) {
+                    lineRef.current.material.color = rssiColor;
+                }
             }
         }
         
@@ -173,26 +190,17 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
 
     return (
         <group>
-            {/* Visual Line */}
-            <line>
-                <bufferGeometry ref={geoRef}>
-                    <bufferAttribute
-                        attach="attributes-position"
-                        count={2}
-                        array={positions}
-                        itemSize={3}
-                    />
-                </bufferGeometry>
-                <lineBasicMaterial 
-                    ref={materialRef}
-                    color={lineColor} 
-                    transparent 
-                    opacity={isDimmed ? 0.2 : (isHighlighted ? 0.8 : 0.6)} 
-                    linewidth={isHighlighted ? 4 : 2} 
-                />
-            </line>
+            {/* Visual Line using drei Line for thickness */}
+            <Line
+                ref={lineRef}
+                points={initialPoints}
+                color={lineColor}
+                transparent
+                opacity={isDimmed ? 0.2 : (isHighlighted ? 0.8 : 0.6)}
+                lineWidth={isHighlighted ? 5 : 3}
+            />
             
-            {/* Click Hit Area */}
+            {/* Click Hit Area (invisible thicker line) */}
              <line 
                 onClick={handleClick} 
                 onPointerOver={() => document.body.style.cursor = 'pointer'} 
