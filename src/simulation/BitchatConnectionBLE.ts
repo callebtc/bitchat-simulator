@@ -10,6 +10,8 @@ export class BitchatConnectionBLE extends BitchatConnection {
 
         const target = this.getOtherParty(from);
         
+        this.packetsSent++;
+        
         // Visualize
         if (this.onPacketSent) {
             this.onPacketSent(packet, from);
@@ -18,5 +20,7 @@ export class BitchatConnectionBLE extends BitchatConnection {
         // Simulate immediate delivery for now
         // In real sim, we might add a delay or drop chance
         target.receivePacket(packet, from);
+        
+        this.packetsReceived++;
     }
 }

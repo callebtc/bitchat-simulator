@@ -6,6 +6,7 @@ import { useSelection } from '../context/SelectionContext';
 import { PersonNode } from './PersonNode';
 import { ConnectionEdge } from './ConnectionEdge';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
+import { InteractionPlane } from './InteractionPlane';
 
 export const Scene: React.FC = () => {
     const engine = useSimulation();
@@ -59,6 +60,8 @@ export const Scene: React.FC = () => {
                 
                 <ambientLight intensity={0.5} />
                 
+                <InteractionPlane />
+
                 {personIds.map(id => (
                     <PersonNode key={id} id={id} />
                 ))}

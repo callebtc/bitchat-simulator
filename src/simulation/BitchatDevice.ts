@@ -1,11 +1,13 @@
 import { ConnectionManager } from './ConnectionManager';
 import { BitchatPacket } from '../protocol/BitchatPacket';
+import { LogManager } from './LogManager';
 // import { BitchatAppSimulator } from './AppLayer/BitchatAppSimulator'; // Circular, avoid explicit type if possible or use interface
 
 import { Point } from './types';
 
 export interface DeviceTickable {
     tick(now: number): void;
+    setLogger?(logger: LogManager): void;
 }
 
 export class BitchatDevice {
@@ -14,6 +16,7 @@ export class BitchatDevice {
     connectionManager: ConnectionManager;
     appSimulator?: DeviceTickable;
     position?: Point; // Simulation hack for visualization
+    logger?: LogManager;
     
     // Callbacks
     onPacketReceived?: (packet: BitchatPacket, from: BitchatDevice) => void;
@@ -24,8 +27,19 @@ export class BitchatDevice {
         this.connectionManager = new ConnectionManager(this);
     }
     
+    setLogger(logger: LogManager) {
+        this.logger = logger;
+        this.connectionManager.setLogger(logger);
+        if (this.appSimulator?.setLogger) {
+            this.appSimulator.setLogger(logger);
+        }
+    }
+    
     setAppSimulator(sim: DeviceTickable) {
         this.appSimulator = sim;
+        if (this.logger && sim.setLogger) {
+            sim.setLogger(this.logger);
+        }
     }
 
     tick(now: number) {

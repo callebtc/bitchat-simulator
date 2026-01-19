@@ -3,6 +3,7 @@ import { SpatialManager } from './SpatialManager';
 import { EventBus } from '../events/EventBus';
 import { BitchatConnection } from './BitchatConnection';
 import { BitchatConnectionBLE } from './BitchatConnectionBLE';
+import { LogManager } from './LogManager';
 
 const CONNECT_RADIUS = 100;
 const DISCONNECT_RADIUS = 110;
@@ -10,6 +11,7 @@ const DISCONNECT_RADIUS = 110;
 export class SimulationEngine {
     spatial: SpatialManager;
     events: EventBus;
+    logManager: LogManager;
     
     private isRunning: boolean = false;
     private lastTime: number = 0;
@@ -21,12 +23,15 @@ export class SimulationEngine {
     constructor() {
         this.spatial = new SpatialManager();
         this.events = new EventBus();
+        this.logManager = new LogManager();
     }
 
     addPerson(person: BitchatPerson) {
+        person.setLogger(this.logManager);
         this.people.set(person.id, person);
         this.spatial.addPerson(person);
         this.events.emit('person_added', person);
+        this.logManager.log('INFO', 'GLOBAL', `Added person ${person.id}`);
     }
 
     removePerson(id: string) {
@@ -43,6 +48,7 @@ export class SimulationEngine {
         this.people.delete(id);
         this.spatial.removePerson(id);
         this.events.emit('person_removed', id);
+        this.logManager.log('INFO', 'GLOBAL', `Removed person ${id}`);
     }
     
     reset() {
@@ -59,8 +65,10 @@ export class SimulationEngine {
             this.spatial.removePerson(id);
         });
         this.people.clear();
+        this.logManager.clear();
         
         this.events.emit('reset', undefined);
+        this.logManager.log('INFO', 'GLOBAL', 'Simulation Reset');
     }
 
     start() {
@@ -149,12 +157,26 @@ export class SimulationEngine {
     
     private formConnection(key: string, p1: BitchatPerson, p2: BitchatPerson) {
         const conn = new BitchatConnectionBLE(p1.device, p2.device);
+        conn.setLogger(this.logManager);
+        
+        // Hook up visualization events
+        conn.onPacketSent = (packet, from) => {
+            this.events.emit('packet_transmitted', {
+                connectionId: conn.id,
+                packet: packet,
+                fromId: from.peerIDHex
+            });
+        };
+        
         this.globalConnections.set(key, conn);
         
         p1.device.connectionManager.addConnection(conn);
         p2.device.connectionManager.addConnection(conn);
         
         this.events.emit('connection_formed', conn);
+        this.logManager.log('INFO', 'CONNECTION', 'Connection Formed', conn.id, {
+             between: [p1.device.nickname, p2.device.nickname]
+        });
     }
     
     private breakConnection(key: string, conn: BitchatConnection) {
@@ -164,5 +186,6 @@ export class SimulationEngine {
         
         this.globalConnections.delete(key);
         this.events.emit('connection_broken', conn);
+        this.logManager.log('INFO', 'CONNECTION', 'Connection Broken', conn.id);
     }
 }

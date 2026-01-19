@@ -2,6 +2,7 @@ import { BitchatDevice } from '../BitchatDevice';
 import { PeerManager } from './PeerManager';
 import { BitchatPacket, MessageType, createPacket, SpecialRecipients } from '../../protocol/BitchatPacket';
 import { TLV, TLVType } from '../../protocol/TLV';
+import { LogManager } from '../LogManager';
 
 const ANNOUNCE_INTERVAL = 5000; // 5 seconds
 const MAX_TTL = 7;
@@ -11,6 +12,7 @@ export class BitchatAppSimulator {
     peerManager: PeerManager;
     private lastAnnounceTime: number = 0;
     private seenPackets: Set<string> = new Set();
+    private logger?: LogManager;
 
     constructor(device: BitchatDevice) {
         this.device = device;
@@ -18,10 +20,20 @@ export class BitchatAppSimulator {
         this.device.onPacketReceived = (p, from) => this.handlePacket(p, from);
     }
 
+    setLogger(logger: LogManager) {
+        this.logger = logger;
+    }
+
     tick(now: number) {
         if (now - this.lastAnnounceTime > ANNOUNCE_INTERVAL) {
             this.sendAnnounce();
             this.lastAnnounceTime = now;
+        }
+    }
+
+    private log(message: string, details?: any, level: 'INFO'|'DEBUG' = 'INFO') {
+        if (this.logger) {
+            this.logger.log(level, 'PACKET', message, this.device.peerIDHex, details);
         }
     }
 
@@ -50,17 +62,34 @@ export class BitchatAppSimulator {
         // Mark as seen so we don't echo it back if it loops
         this.markSeen(packet);
         this.device.connectionManager.broadcast(packet);
+        
+        this.log(`Broadcasting ANNOUNCE`, { 
+            ttl: MAX_TTL, 
+            neighbors: connectedPeers.length 
+        }, 'DEBUG');
     }
 
     private handlePacket(packet: BitchatPacket, from: BitchatDevice) {
-        // 0. Duplicate Check
         const packetId = this.getPacketId(packet);
-        if (this.seenPackets.has(packetId)) return;
+        const typeStr = packet.type === MessageType.ANNOUNCE ? 'ANNOUNCE' : 'MESSAGE';
+        
+        // 0. Duplicate Check
+        if (this.seenPackets.has(packetId)) {
+            // this.log(`Dropped duplicate packet ${typeStr}`, { packetId }, 'DEBUG');
+            return;
+        }
         this.markSeen(packet);
 
         // 1. Loop Check: Did I send this?
         const senderHex = this.toHex(packet.senderID);
         if (senderHex === this.device.peerIDHex) return;
+
+        this.log(`Received ${typeStr}`, {
+            from: from.nickname,
+            sender: senderHex.substring(0,6),
+            ttl: packet.ttl,
+            recipient: packet.recipientID ? this.toHex(packet.recipientID).substring(0,6) : 'BROADCAST'
+        });
 
         // 2. Process Packet
         if (packet.type === MessageType.ANNOUNCE) {
@@ -68,13 +97,20 @@ export class BitchatAppSimulator {
         }
 
         // 3. Relay Logic
-        if (packet.ttl <= 1) return; // Drop if TTL will become 0
+        if (packet.ttl <= 1) {
+            this.log(`Dropped packet ${typeStr} (TTL Expired)`, { packetId }, 'DEBUG');
+            return; 
+        }
         
         const relayPacket = { ...packet, ttl: packet.ttl - 1 };
         
         const isForMe = this.isForMe(packet);
         if (!isForMe || packet.recipientID === undefined) {
              // Split Horizon: Don't send back to 'from'
+             this.log(`Relaying ${typeStr}`, {
+                 ttl: relayPacket.ttl,
+                 receivedFrom: from.nickname
+             });
              this.device.connectionManager.broadcast(relayPacket, from);
         }
     }

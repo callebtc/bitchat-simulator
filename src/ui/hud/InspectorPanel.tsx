@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useSelection } from '../context/SelectionContext';
 import { useSimulation } from '../context/SimulationContext';
 import { BitchatAppSimulator } from '../../simulation/AppLayer/BitchatAppSimulator';
+import { MovementMode } from '../../simulation/BitchatPerson';
 
 export const InspectorPanel: React.FC = () => {
     const { selectedId, selectionType } = useSelection();
@@ -16,7 +17,7 @@ export const InspectorPanel: React.FC = () => {
 
     if (!selectedId) {
         return (
-            <div className="absolute top-4 right-4 w-64 bg-black/80 text-white p-4 rounded backdrop-blur-sm border border-gray-700">
+            <div className="absolute top-4 right-4 w-64 bg-black/80 text-white p-4 rounded backdrop-blur-sm border border-gray-700 pointer-events-none">
                 <p className="opacity-50 italic">Select a node or connection</p>
             </div>
         );
@@ -33,7 +34,7 @@ export const InspectorPanel: React.FC = () => {
         const knownPeers = sim?.peerManager.getAllPeers() || [];
 
         return (
-            <div className="absolute top-4 right-4 w-80 bg-black/90 text-white p-4 rounded backdrop-blur-md border border-gray-700 max-h-[90vh] overflow-y-auto shadow-xl font-mono text-sm">
+            <div className="absolute top-4 right-4 w-80 bg-black/90 text-white p-4 rounded backdrop-blur-md border border-gray-700 max-h-[90vh] overflow-y-auto shadow-xl font-mono text-sm pointer-events-auto">
                 <h2 className="text-lg font-bold text-cyan-400 mb-2">{device.nickname}</h2>
                 <div className="mb-4 space-y-1">
                     <div className="flex justify-between">
@@ -44,6 +45,23 @@ export const InspectorPanel: React.FC = () => {
                         <span className="opacity-60">Pos:</span>
                         <span>{person.position.x.toFixed(0)}, {person.position.y.toFixed(0)}</span>
                     </div>
+                    <div className="flex justify-between items-center mt-2">
+                         <span className="opacity-60">Movement:</span>
+                         <select 
+                            value={person.mode} 
+                            onChange={(e) => person.setMode(e.target.value as MovementMode)}
+                            className="bg-gray-800 border border-gray-600 rounded px-1 text-xs"
+                         >
+                             <option value={MovementMode.STILL}>Still</option>
+                             <option value={MovementMode.RANDOM_WALK}>Random Walk</option>
+                             <option value={MovementMode.TARGET}>Target</option>
+                         </select>
+                    </div>
+                    {person.mode === MovementMode.TARGET && (
+                        <div className="text-xs text-yellow-400 mt-1">
+                            Click on map to set target
+                        </div>
+                    )}
                 </div>
 
                 <div className="mb-4 border-t border-gray-700 pt-2">
@@ -90,7 +108,7 @@ export const InspectorPanel: React.FC = () => {
         if (!conn) return null;
         
         return (
-            <div className="absolute top-4 right-4 w-80 bg-black/90 text-white p-4 rounded backdrop-blur-md border border-gray-700 shadow-xl font-mono text-sm">
+            <div className="absolute top-4 right-4 w-80 bg-black/90 text-white p-4 rounded backdrop-blur-md border border-gray-700 shadow-xl font-mono text-sm pointer-events-auto">
                 <h2 className="text-lg font-bold text-green-400 mb-2">Connection</h2>
                 <div className="space-y-2">
                     <div className="bg-gray-900 p-2 rounded">
@@ -105,8 +123,17 @@ export const InspectorPanel: React.FC = () => {
                         <div className="text-[10px] opacity-50">{conn.endpointB.peerIDHex.substring(0,8)}...</div>
                     </div>
                 </div>
-                <div className="mt-4 text-xs opacity-60">
-                    Status: {conn.isActive ? 'Active' : 'Broken'}
+                <div className="mt-4 text-xs space-y-1">
+                    <div className="flex justify-between">
+                        <span className="opacity-60">Status:</span>
+                        <span className={conn.isActive ? 'text-green-400' : 'text-red-400'}>
+                            {conn.isActive ? 'Active' : 'Broken'}
+                        </span>
+                    </div>
+                    <div className="flex justify-between">
+                        <span className="opacity-60">Total Packets:</span>
+                        <span>{conn.packetsSent}</span>
+                    </div>
                 </div>
             </div>
         );

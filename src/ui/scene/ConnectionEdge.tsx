@@ -1,8 +1,8 @@
 import React, { useRef, useMemo, useState, useEffect } from 'react';
 import { useFrame } from '@react-three/fiber';
+import { useSimulation } from '../context/SimulationContext'; // Import engine
 import * as THREE from 'three';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
-import { BitchatDevice } from '../../simulation/BitchatDevice';
 import { useSelection } from '../context/SelectionContext';
 import { MessageType } from '../../protocol/BitchatPacket';
 
@@ -20,19 +20,34 @@ interface FlyingPacket {
 export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) => {
     const geoRef = useRef<THREE.BufferGeometry>(null);
     const { selectedId, select } = useSelection();
+    const engine = useSimulation(); // Get engine
     
     // Packet Visualization State
     const [packets, setPackets] = useState<FlyingPacket[]>([]);
     
     const isSelected = selectedId === connection.id;
 
-    // Listen for packets
+    // Listen for packets via EventBus
     useEffect(() => {
-        const handlePacket = (p: any, from: BitchatDevice) => {
-            const direction = from === connection.endpointA ? 1 : -1;
-            let color = 'white';
-            if (p.type === MessageType.ANNOUNCE) color = '#00ffff'; // Cyan
-            if (p.type === MessageType.MESSAGE) color = '#00ff00'; // Green
+        const handlePacket = (data: any) => {
+            if (data.connectionId !== connection.id) return;
+            
+            const direction = data.fromId === connection.endpointA.peerIDHex ? 1 : -1;
+            const p = data.packet;
+            
+            // Color Logic based on Type and TTL
+            // TTL 7 -> 1
+            
+            let colorObj = new THREE.Color(0xffffff);
+            if (p.type === MessageType.ANNOUNCE) colorObj.setHex(0x00ffff);
+            if (p.type === MessageType.MESSAGE) colorObj.setHex(0x00ff00);
+            
+            // Dim it based on TTL?
+            // HSL approach might be better. 
+            // Or just lerp to black?
+            colorObj.lerp(new THREE.Color(0x000000), 1 - (p.ttl / 8)); 
+            
+            const color = '#' + colorObj.getHexString();
             
             setPackets(prev => [
                 ...prev, 
@@ -40,9 +55,9 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             ]);
         };
         
-        connection.onPacketSent = handlePacket;
-        return () => { connection.onPacketSent = undefined; };
-    }, [connection]);
+        engine.events.on('packet_transmitted', handlePacket);
+        return () => { engine.events.off('packet_transmitted', handlePacket); };
+    }, [connection, engine]);
 
     // Initial positions buffer
     const positions = useMemo(() => new Float32Array(6), []);
@@ -65,13 +80,13 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             setPackets(prev => {
                 const next: FlyingPacket[] = [];
                 // Speed: 1 unit per second? No, inverse to length?
-                // Let's say fixed speed of 50 units/sec
+                // Let's say fixed speed of 100 units/sec
                 const posA = connection.endpointA.position!;
                 const posB = connection.endpointB.position!;
                 const dx = posA.x - posB.x;
                 const dy = posA.y - posB.y;
                 const dist = Math.sqrt(dx*dx + dy*dy);
-                const speed = 100; // units per sec
+                const speed = 150; // faster
                 const increment = (speed * delta) / (dist || 1);
                 
                 prev.forEach(p => {
@@ -110,19 +125,12 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                 />
             </line>
             
-            {/* Hit Area (Thick invisible line) - using a simple cylinder scaled to match? 
-                Too complex to update cylinder orientation every frame in React without heavy calc.
-                Alternative: Line with linewidth? WebGL linewidth is limited to 1 on many browsers.
-                Alternative: MeshLine?
-                Simple Hack: Just use the line. Raycasting usually has a threshold.
-                If flaky, we can assume users click nodes mostly. 
-                Let's stick to standard line events, ThreeJS Raycaster 'params.Line.threshold' can be adjusted globally.
-             */}
+            {/* Click Hit Area (using wider invisible line if possible, or just the line) */}
              <line onClick={handleClick} onPointerOver={() => document.body.style.cursor = 'pointer'} onPointerOut={() => document.body.style.cursor = 'auto'}>
                  <bufferGeometry>
                     <bufferAttribute attach="attributes-position" count={2} array={positions} itemSize={3} />
                  </bufferGeometry>
-                 <lineBasicMaterial transparent opacity={0} />
+                 <lineBasicMaterial transparent opacity={0} linewidth={10} /> 
              </line>
 
             {/* Flying Packets */}
@@ -136,7 +144,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                 
                 return (
                     <mesh key={p.id} position={[x, y, 0]}>
-                        <sphereGeometry args={[1.5, 8, 8]} />
+                        <sphereGeometry args={[2, 8, 8]} />
                         <meshBasicMaterial color={p.color} />
                     </mesh>
                 );

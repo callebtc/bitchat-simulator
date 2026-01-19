@@ -1,4 +1,4 @@
-import React, { useRef, useMemo, useState } from 'react';
+import React, { useRef, useMemo } from 'react';
 import { useFrame, ThreeEvent } from '@react-three/fiber';
 import { useSimulation } from '../context/SimulationContext';
 import { useSelection } from '../context/SelectionContext';
@@ -13,7 +13,6 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     const engine = useSimulation();
     const { selectedId, select, setDragging } = useSelection();
     const meshRef = useRef<THREE.Group>(null);
-    const [localDrag, setLocalDrag] = useState(false);
     
     // Initial color
     const baseColor = useMemo(() => new THREE.Color().setHSL(Math.random(), 0.7, 0.5), []);
@@ -27,53 +26,24 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
         if (person) {
             meshRef.current.position.x = person.position.x;
             meshRef.current.position.y = person.position.y;
-            
-            // Highlight selected
-            if (isSelected) {
-               // Pulse effect?
-            }
         }
     });
     
     const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
-        e.stopPropagation();
+        e.stopPropagation(); // Don't trigger background click
         select(id, 'node');
-        setLocalDrag(true);
         setDragging(true);
-        const person = engine.getPerson(id);
-        if (person) person.setVelocity({x: 0, y: 0}); 
         
-        (e.target as Element).setPointerCapture(e.pointerId);
-    };
-    
-    const handlePointerUp = (e: ThreeEvent<PointerEvent>) => {
-        e.stopPropagation();
-        setLocalDrag(false);
-        setDragging(false);
-        (e.target as Element).releasePointerCapture(e.pointerId);
-    };
-    
-    const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
-        if (localDrag) {
-
-            e.stopPropagation();
-            const person = engine.getPerson(id);
-            if (person) {
-                // Update Sim State
-                person.position.x = e.point.x;
-                person.position.y = e.point.y;
-                person.setVelocity({x:0, y:0});
-            }
+        const person = engine.getPerson(id);
+        if (person) {
+            person.setVelocity({x: 0, y: 0}); 
+            // Also stop random walk or target move? We'll handle that in Person logic update later
         }
     };
 
     return (
         <group ref={meshRef}>
-            <mesh 
-                onPointerDown={handlePointerDown}
-                onPointerUp={handlePointerUp}
-                onPointerMove={handlePointerMove}
-            >
+            <mesh onPointerDown={handlePointerDown}>
                 <circleGeometry args={[5, 32]} />
                 <meshBasicMaterial color={isSelected ? 'white' : baseColor} />
             </mesh>

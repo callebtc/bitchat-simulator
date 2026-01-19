@@ -1,12 +1,18 @@
 import { BitchatDevice } from './BitchatDevice';
 import { BitchatPacket } from '../protocol/BitchatPacket';
+import { LogManager } from './LogManager';
 
 export abstract class BitchatConnection {
     id: string;
     endpointA: BitchatDevice;
     endpointB: BitchatDevice;
     isActive: boolean = true;
+    logger?: LogManager;
     
+    // Stats
+    packetsSent: number = 0;
+    packetsReceived: number = 0;
+
     // Visualization callbacks
     onPacketSent?: (packet: BitchatPacket, from: BitchatDevice) => void;
 
@@ -15,9 +21,14 @@ export abstract class BitchatConnection {
         this.endpointA = endpointA;
         this.endpointB = endpointB;
     }
+    
+    setLogger(logger: LogManager) {
+        this.logger = logger;
+    }
 
     // Abstract method to send data
     abstract send(packet: BitchatPacket, from: BitchatDevice): void;
+
     
     // Check if device is part of this connection
     involves(device: BitchatDevice): boolean {

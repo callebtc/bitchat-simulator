@@ -19,7 +19,7 @@ const SimulationController = () => {
     return null;
 };
 
-import { Terminal } from './hud/Terminal';
+import { LogPanel } from './hud/LogPanel';
 
 // ... (previous imports)
 
@@ -35,7 +35,7 @@ function App() {
             </div>
             <Controls />
             <InspectorPanel />
-            <Terminal />
+            <LogPanel />
         </SelectionProvider>
     </SimulationProvider>
   );
