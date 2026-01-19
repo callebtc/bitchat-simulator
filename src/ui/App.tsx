@@ -8,7 +8,7 @@ import { BottomPanel } from './hud/BottomPanel';
 
 import { setupDemo } from '../simulation/DemoSetup';
 
-import { LayoutProvider } from './context/LayoutContext';
+import { LayoutProvider, useLayout } from './context/LayoutContext';
 
 const SimulationController = () => {
     const engine = useSimulation();
@@ -22,19 +22,25 @@ const SimulationController = () => {
     return null;
 };
 
-// ... (previous imports)
+const LayoutContent = () => {
+    const { bottomPanelHeight } = useLayout();
+    
+    return (
+        <SelectionProvider>
+            <SimulationController />
+            <Scene bottomPanelHeight={bottomPanelHeight} />
+            <MainControlPanel />
+            <InspectorPanel />
+            <BottomPanel />
+        </SelectionProvider>
+    );
+};
 
 function App() {
   return (
     <LayoutProvider>
         <SimulationProvider>
-            <SelectionProvider>
-                <SimulationController />
-                <Scene />
-                <MainControlPanel />
-                <InspectorPanel />
-                <BottomPanel />
-            </SelectionProvider>
+            <LayoutContent />
         </SimulationProvider>
     </LayoutProvider>
   );

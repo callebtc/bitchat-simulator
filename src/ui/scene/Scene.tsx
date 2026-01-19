@@ -9,6 +9,7 @@ import { BuildingLayer } from './BuildingLayer';
 import { PathVisualizer } from './PathVisualizer';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
 import { InteractionPlane } from './InteractionPlane';
+import { ScaleIndicator } from '../hud/ScaleIndicator';
 import * as THREE from 'three';
 
 const ViewTracker: React.FC = () => {
@@ -22,7 +23,11 @@ const ViewTracker: React.FC = () => {
     return null;
 };
 
-export const Scene: React.FC = () => {
+interface SceneProps {
+    bottomPanelHeight?: number;
+}
+
+export const Scene: React.FC<SceneProps> = ({ bottomPanelHeight = 32 }) => {
     const engine = useSimulation();
     const { isDragging } = useSelection();
     const [personIds, setPersonIds] = useState<string[]>([]);
@@ -80,6 +85,7 @@ export const Scene: React.FC = () => {
                     }}
                 />
                 <ViewTracker />
+                <ScaleIndicator bottomOffset={bottomPanelHeight} />
                 
                 <ambientLight intensity={0.5} />
                 
