@@ -3,7 +3,7 @@
  * Ray-polygon intersection calculations for signal attenuation.
  */
 
-import { Building, Point2D, MATERIAL_ATTENUATION } from './types';
+import { Building, Point2D, ATTENUATION_CONFIG } from './types';
 
 interface LineSegmentIntersection {
     /** Entry point into building */
@@ -12,6 +12,8 @@ interface LineSegmentIntersection {
     exit: Point2D;
     /** Distance traveled through building */
     distance: number;
+    /** Number of walls crossed (entry/exit) */
+    wallsCrossed: number;
     /** The building intersected */
     building: Building;
 }
@@ -33,10 +35,39 @@ export function calculateLineAttenuation(
     let totalAttenuation = 0;
 
     for (const building of buildings) {
+        // Check containment first
+        const isAInside = pointInPolygon(a, building.vertices);
+        const isBInside = pointInPolygon(b, building.vertices);
+
+        // Same building optimization:
+        // If both points are inside the SAME building, use low internal attenuation
+        // and assume no perimeter walls are crossed (signal stays inside).
+        if (isAInside && isBInside) {
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            totalAttenuation += dist * ATTENUATION_CONFIG.BUILDING_INTERNAL_DB_M;
+            continue;
+        }
+
+        // Calculate intersection with walls
         const intersection = getLinePolygonIntersection(a, b, building.vertices);
+        
         if (intersection) {
-            const attenuation = intersection.distance * MATERIAL_ATTENUATION[building.material];
-            totalAttenuation += attenuation;
+            // "Shell" Model:
+            // 1. Fixed loss per wall crossed
+            // 2. Distance-based loss through internal material
+            
+            // Determine material rate based on containment (though logic above handles A&B inside)
+            // If we are here, at least one point is outside (or passing through),
+            // so we treat the internal medium as "dense" relative to open air,
+            // or as "solid" per user request.
+            const materialRate = ATTENUATION_CONFIG.BUILDING_DENSE_DB_M;
+            
+            const wallLoss = intersection.wallsCrossed * ATTENUATION_CONFIG.WALL_LOSS;
+            const distLoss = intersection.distance * materialRate;
+            
+            totalAttenuation += wallLoss + distLoss;
         }
     }
 
@@ -45,13 +76,13 @@ export function calculateLineAttenuation(
 
 /**
  * Get detailed intersection info for a line through a polygon.
- * Returns entry point, exit point, and distance through polygon.
+ * Returns entry point, exit point, distance, and wall count.
  */
 export function getLinePolygonIntersection(
     a: Point2D,
     b: Point2D,
     vertices: Point2D[]
-): { entry: Point2D; exit: Point2D; distance: number } | null {
+): { entry: Point2D; exit: Point2D; distance: number; wallsCrossed: number } | null {
     const intersections: { point: Point2D; t: number }[] = [];
     const n = vertices.length;
 
@@ -66,25 +97,61 @@ export function getLinePolygonIntersection(
         }
     }
 
-    // Need at least 2 intersections (entry and exit)
-    if (intersections.length < 2) {
-        // Check if line is entirely inside polygon
-        if (pointInPolygon(a, vertices) && pointInPolygon(b, vertices)) {
+    // Sort by parameter t (position along line)
+    intersections.sort((x, y) => x.t - y.t);
+
+    const isAInside = pointInPolygon(a, vertices);
+    const isBInside = pointInPolygon(b, vertices);
+
+    // Case 0: No intersections
+    if (intersections.length === 0) {
+        if (isAInside && isBInside) {
+            // Entirely inside (no walls crossed relative to the segment, but contained)
+            // Note: calculateLineAttenuation handles A&B inside specifically.
+            // But if called generically:
             const dx = b.x - a.x;
             const dy = b.y - a.y;
             return {
                 entry: a,
                 exit: b,
                 distance: Math.sqrt(dx * dx + dy * dy),
+                wallsCrossed: 0
             };
         }
         return null;
     }
 
-    // Sort by parameter t (position along line)
-    intersections.sort((x, y) => x.t - y.t);
+    // Case 1: Single intersection (Entering or Exiting)
+    if (intersections.length === 1) {
+        const p = intersections[0].point;
+        if (isAInside) {
+            // Inside -> Out
+            const dx = p.x - a.x;
+            const dy = p.y - a.y;
+            return {
+                entry: a,
+                exit: p,
+                distance: Math.sqrt(dx * dx + dy * dy),
+                wallsCrossed: 1
+            };
+        } else if (isBInside) {
+            // Outside -> In
+            const dx = b.x - p.x;
+            const dy = b.y - p.y;
+            return {
+                entry: p,
+                exit: b,
+                distance: Math.sqrt(dx * dx + dy * dy),
+                wallsCrossed: 1
+            };
+        }
+        // Glancing blow or error, treat as null
+        return null;
+    }
 
-    // Take first and last intersection as entry/exit
+    // Case 2: Two or more intersections (Pass through)
+    // Take first and last (in case of complex non-convex shapes, this simplifies to "convex hull" equivalent distance)
+    // For robust "shell" counting on non-convex, we'd count entries/exits, but simplest is 2 walls.
     const entry = intersections[0].point;
     const exit = intersections[intersections.length - 1].point;
 
@@ -92,7 +159,9 @@ export function getLinePolygonIntersection(
     const dy = exit.y - entry.y;
     const distance = Math.sqrt(dx * dx + dy * dy);
 
-    return { entry, exit, distance };
+    // If passing through, we cross at least 2 walls (Entry + Exit)
+    // (Technically could be more for concave, but 2 is the standard assumption for "shell")
+    return { entry, exit, distance, wallsCrossed: 2 };
 }
 
 /**
@@ -179,6 +248,7 @@ export function getDetailedIntersections(
                 entry: intersection.entry,
                 exit: intersection.exit,
                 distance: intersection.distance,
+                wallsCrossed: intersection.wallsCrossed,
                 building,
             });
         }

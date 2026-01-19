@@ -42,7 +42,17 @@ export enum Material {
     BUILDING = 'building',
 }
 
-/** Signal attenuation in dB per meter for each material */
+/** Signal attenuation constants */
+export const ATTENUATION_CONFIG = {
+    /** Fixed loss when signal penetrates a building outer wall (dB) */
+    WALL_LOSS: 15,
+    /** Attenuation per meter when signal travels inside a building (dB/m) - used when peers are NOT in same building */
+    BUILDING_DENSE_DB_M: 4.0,
+    /** Attenuation per meter when signal travels inside a building (dB/m) - used when peers ARE in same building */
+    BUILDING_INTERNAL_DB_M: 0.5,
+};
+
+/** Signal attenuation in dB per meter for each material (Legacy/Base values) */
 export const MATERIAL_ATTENUATION: Record<Material, number> = {
     [Material.AIR]: 0,
     [Material.BUILDING]: 12, // dB per meter
@@ -118,7 +128,7 @@ export function latLonToLocal(
 
     // X: longitude difference in meters
     const x = ((lon - refLon) * Math.PI / 180) * EARTH_RADIUS * Math.cos(refLatRad);
-    
+
     // Y: latitude difference in meters
     const y = ((lat - refLat) * Math.PI / 180) * EARTH_RADIUS;
 
