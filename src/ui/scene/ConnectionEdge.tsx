@@ -7,6 +7,7 @@ import { BitchatConnection } from '../../simulation/BitchatConnection';
 import { BitchatConnectionBLE, RSSI_CONFIG } from '../../simulation/BitchatConnectionBLE';
 import { useSelection } from '../context/SelectionContext';
 import { MessageType } from '../../protocol/BitchatPacket';
+import { BitchatAppSimulator } from '../../simulation/AppLayer/BitchatAppSimulator';
 
 interface ConnectionEdgeProps {
     connection: BitchatConnection;
@@ -43,6 +44,9 @@ function rssiToColor(rssi: number): THREE.Color {
 
 export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) => {
     const lineRef = useRef<any>(null); // Reference to the Line (Line2) mesh
+    const segmentARef = useRef<any>(null); // Segment A->Mid
+    const segmentBRef = useRef<any>(null); // Segment B->Mid
+    
     const { selectedId, select } = useSelection();
     const engine = useSimulation();
     
@@ -62,7 +66,37 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
     }
     
     const isHighlighted = isConnectionSelected || isEndpointSelected;
-    const isDimmed = selectedId !== null && !isHighlighted;
+    
+    // Graph Knowledge Visualization Logic
+    let isGraphMode = false;
+    let knownAtoB = false; // A knows B
+    let knownBtoA = false; // B knows A
+    let isUnknownMuted = false;
+
+    if (selectedId && !isConnectionSelected) {
+        // If a node is selected, we want to visualize ITS graph
+        // (unless we selected the connection itself)
+        const selectedPerson = engine.getPerson(selectedId);
+        if (selectedPerson && selectedPerson.device.appSimulator) {
+            // Check type safety - assume BitchatAppSimulator for now
+            const sim = selectedPerson.device.appSimulator as unknown as BitchatAppSimulator;
+            if (sim.meshGraph) {
+                isGraphMode = true;
+                const idA = connection.endpointA.peerIDHex;
+                const idB = connection.endpointB.peerIDHex;
+                
+                knownAtoB = sim.meshGraph.hasNeighbor(idA, idB);
+                knownBtoA = sim.meshGraph.hasNeighbor(idB, idA);
+
+                // If completely unknown to the selected node, mute it
+                if (!knownAtoB && !knownBtoA) {
+                    isUnknownMuted = true;
+                }
+            }
+        }
+    }
+
+    const isDimmed = (selectedId !== null && !isHighlighted && !isGraphMode) || isUnknownMuted;
 
     // Listen for packets via EventBus
     useEffect(() => {
@@ -111,8 +145,12 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
     }, [connection, engine]);
 
 
-    // Initial positions buffer
+    // Buffer for hit area
     const positions = useMemo(() => new Float32Array(6), []);
+    
+    // Buffers for Split View (Graph Mode)
+    const positionsA = useMemo(() => new Float32Array(6), []);
+    const positionsB = useMemo(() => new Float32Array(6), []);
     
     // Initial points for Line component
     const initialPoints = useMemo(() => {
@@ -125,29 +163,44 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
     }, []);
 
     useFrame((_state, delta) => {
-        // Update Line Geometry
-        if (lineRef.current) {
-            const posA = connection.endpointA.position;
-            const posB = connection.endpointB.position;
+        const posA = connection.endpointA.position;
+        const posB = connection.endpointB.position;
+        
+        if (posA && posB) {
+            // Update Hit Area Logic
+            positions[0] = posA.x; positions[1] = posA.y; positions[2] = 0;
+            positions[3] = posB.x; positions[4] = posB.y; positions[5] = 0;
+            
+            if (isGraphMode && !isUnknownMuted) {
+                // Split Mode Update
+                const midX = (posA.x + posB.x) / 2;
+                const midY = (posA.y + posB.y) / 2;
 
-            if (posA && posB) {
-                positions[0] = posA.x; positions[1] = posA.y; positions[2] = 0;
-                positions[3] = posB.x; positions[4] = posB.y; positions[5] = 0;
+                // Segment A -> Mid
+                positionsA[0] = posA.x; positionsA[1] = posA.y; positionsA[2] = 0;
+                positionsA[3] = midX;   positionsA[4] = midY;   positionsA[5] = 0;
+
+                // Segment B -> Mid
+                positionsB[0] = posB.x; positionsB[1] = posB.y; positionsB[2] = 0;
+                positionsB[3] = midX;   positionsB[4] = midY;   positionsB[5] = 0;
                 
-                // Update Line2 geometry
-                // Line from drei uses Line2 which has geometry with setPositions
-                if (lineRef.current.geometry?.setPositions) {
+                if (segmentARef.current?.geometry?.setPositions) segmentARef.current.geometry.setPositions(positionsA);
+                if (segmentBRef.current?.geometry?.setPositions) segmentBRef.current.geometry.setPositions(positionsB);
+
+            } else {
+                // Standard Mode Update
+                if (lineRef.current?.geometry?.setPositions) {
                     lineRef.current.geometry.setPositions(positions);
                 }
-            }
-        }
-
-        // Update line color based on RSSI (if BLE connection)
-        if (lineRef.current && !isHighlighted && !isDimmed) {
-            if (connection instanceof BitchatConnectionBLE) {
-                const rssiColor = rssiToColor(connection.rssi);
-                if (lineRef.current.material) {
-                    lineRef.current.material.color = rssiColor;
+                
+                // Update color for physical link
+                if (lineRef.current && !isHighlighted && !isDimmed) {
+                    if (connection instanceof BitchatConnectionBLE) {
+                        const rssiColor = rssiToColor(connection.rssi);
+                        if (lineRef.current.material) {
+                            lineRef.current.material.color = rssiColor;
+                        }
+                    }
                 }
             }
         }
@@ -156,10 +209,10 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
         if (packets.length > 0) {
             setPackets(prev => {
                 const next: FlyingPacket[] = [];
-                const posA = connection.endpointA.position!;
-                const posB = connection.endpointB.position!;
-                const dx = posA.x - posB.x;
-                const dy = posA.y - posB.y;
+                const pA = connection.endpointA.position!;
+                const pB = connection.endpointB.position!;
+                const dx = pA.x - pB.x;
+                const dy = pA.y - pB.y;
                 const dist = Math.sqrt(dx*dx + dy*dy);
                 const speed = 150;
                 const increment = (speed * delta) / (dist || 1);
@@ -180,58 +233,102 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
         select(connection.id, 'connection');
     };
 
-    // Determine line color
-    let lineColor: THREE.Color | string = 'green';
-    if (isHighlighted) {
-        lineColor = 'yellow';
-    } else if (!isDimmed && connection instanceof BitchatConnectionBLE) {
-        lineColor = rssiToColor(connection.rssi);
-    }
+    // Render Logic Selection
+    if (isGraphMode && !isUnknownMuted) {
+        // --- GRAPH KNOWLEDGE VIEW ---
+        const colorKnown = 0x00ffff; // Neon Cyan
+        const colorUnknown = 0x888888; // Grey
 
-    return (
-        <group>
-            {/* Visual Line using drei Line for thickness */}
-            <Line
-                ref={lineRef}
-                points={initialPoints}
-                color={lineColor}
-                transparent
-                opacity={isDimmed ? 0.2 : (isHighlighted ? 0.8 : 0.6)}
-                lineWidth={isHighlighted ? 3 : 1.5}
-            />
-            
-            {/* Click Hit Area (invisible thicker line) */}
-             <line 
-                onClick={handleClick} 
-                onPointerOver={() => document.body.style.cursor = 'pointer'} 
-                onPointerOut={() => document.body.style.cursor = 'auto'}
-            >
-                 <bufferGeometry>
-                    <bufferAttribute 
-                        attach="attributes-position" 
-                        count={2} 
-                        array={positions} 
-                        itemSize={3} 
-                    />
-                 </bufferGeometry>
-                 <lineBasicMaterial transparent opacity={0} linewidth={10} /> 
-             </line>
-
-            {/* Flying Packets */}
-            {packets.map(p => {
-                const posA = connection.endpointA.position!;
-                const posB = connection.endpointB.position!;
-                const t = p.direction === 1 ? p.progress : (1 - p.progress);
-                const x = posA.x + (posB.x - posA.x) * t;
-                const y = posA.y + (posB.y - posA.y) * t;
+        return (
+            <group>
+                {/* Segment A -> Mid */}
+                <Line
+                    ref={segmentARef}
+                    points={[[0,0,0], [0,0,0]]} // Updated in useFrame
+                    color={knownAtoB ? colorKnown : colorUnknown}
+                    transparent
+                    opacity={knownAtoB ? 1 : 0.5}
+                    lineWidth={2}
+                    dashed={!knownAtoB}
+                    dashScale={2}
+                    dashSize={2}
+                    gapSize={1}
+                />
                 
-                return (
-                    <mesh key={p.id} position={[x, y, 0]}>
-                        <sphereGeometry args={[p.isRelay ? 1.5 : 2.5, 8, 8]} />
-                        <meshBasicMaterial color={p.color} />
-                    </mesh>
-                );
-            })}
-        </group>
-    );
+                {/* Segment B -> Mid */}
+                <Line
+                    ref={segmentBRef}
+                    points={[[0,0,0], [0,0,0]]} // Updated in useFrame
+                    color={knownBtoA ? colorKnown : colorUnknown}
+                    transparent
+                    opacity={knownBtoA ? 1 : 0.5}
+                    lineWidth={2}
+                    dashed={!knownBtoA}
+                    dashScale={2}
+                    dashSize={2}
+                    gapSize={1}
+                />
+                
+                {/* Hit Area */}
+                <line 
+                    onClick={handleClick} 
+                    onPointerOver={() => document.body.style.cursor = 'pointer'} 
+                    onPointerOut={() => document.body.style.cursor = 'auto'}
+                >
+                     <bufferGeometry>
+                        <bufferAttribute attach="attributes-position" count={2} array={positions} itemSize={3} />
+                     </bufferGeometry>
+                     <lineBasicMaterial transparent opacity={0} linewidth={10} /> 
+                 </line>
+            </group>
+        );
+    } else {
+        // --- STANDARD / MUTED VIEW ---
+        let lineColor: THREE.Color | string = 'green';
+        if (isHighlighted) {
+            lineColor = 'yellow';
+        } else if (!isDimmed && connection instanceof BitchatConnectionBLE) {
+            lineColor = rssiToColor(connection.rssi);
+        }
+
+        return (
+            <group>
+                <Line
+                    ref={lineRef}
+                    points={initialPoints}
+                    color={lineColor}
+                    transparent
+                    opacity={isDimmed ? 0.1 : (isHighlighted ? 0.8 : 0.6)}
+                    lineWidth={isHighlighted ? 3 : 1.5}
+                />
+                
+                <line 
+                    onClick={handleClick} 
+                    onPointerOver={() => document.body.style.cursor = 'pointer'} 
+                    onPointerOut={() => document.body.style.cursor = 'auto'}
+                >
+                     <bufferGeometry>
+                        <bufferAttribute attach="attributes-position" count={2} array={positions} itemSize={3} />
+                     </bufferGeometry>
+                     <lineBasicMaterial transparent opacity={0} linewidth={10} /> 
+                 </line>
+
+                {/* Flying Packets */}
+                {packets.map(p => {
+                    const posA = connection.endpointA.position!;
+                    const posB = connection.endpointB.position!;
+                    const t = p.direction === 1 ? p.progress : (1 - p.progress);
+                    const x = posA.x + (posB.x - posA.x) * t;
+                    const y = posA.y + (posB.y - posA.y) * t;
+                    
+                    return (
+                        <mesh key={p.id} position={[x, y, 0]}>
+                            <sphereGeometry args={[p.isRelay ? 1.5 : 2.5, 8, 8]} />
+                            <meshBasicMaterial color={p.color} />
+                        </mesh>
+                    );
+                })}
+            </group>
+        );
+    }
 };

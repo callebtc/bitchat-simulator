@@ -96,6 +96,10 @@ export class MeshGraph {
         return null;
     }
 
+    hasNeighbor(origin: string, neighbor: string): boolean {
+        return this.announcements.get(origin)?.has(neighbor) ?? false;
+    }
+
     clear() {
         this.announcements.clear();
     }
