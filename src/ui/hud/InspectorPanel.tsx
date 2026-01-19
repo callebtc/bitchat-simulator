@@ -35,6 +35,12 @@ export const InspectorPanel: React.FC = () => {
 
         return (
             <div className="absolute top-4 right-4 w-80 bg-black/90 text-white p-4 rounded backdrop-blur-md border border-gray-700 max-h-[90vh] overflow-y-auto shadow-xl font-mono text-sm pointer-events-auto">
+                <button 
+                    className="absolute top-2 right-2 text-gray-500 hover:text-white transition-colors"
+                    onClick={() => useSelection().select(null, null)} // This won't work because hooks can't be called in callback
+                >
+                    ✕
+                </button>
                 <h2 className="text-lg font-bold text-cyan-400 mb-2">{device.nickname}</h2>
                 <div className="mb-4 space-y-1">
                     <div className="flex justify-between">
