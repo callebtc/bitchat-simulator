@@ -11,6 +11,7 @@ import { setupDemo } from '../simulation/DemoSetup';
 import { LayoutProvider } from './context/LayoutContext';
 import { ScaleProvider } from './context/ScaleContext';
 import { ScaleOverlay } from './hud/ScaleIndicator';
+import { VisualizationProvider } from './context/VisualizationContext';
 
 const SimulationController = () => {
     const engine = useSimulation();
@@ -41,9 +42,11 @@ function App() {
   return (
     <LayoutProvider>
         <ScaleProvider>
-            <SimulationProvider>
-                <LayoutContent />
-            </SimulationProvider>
+            <VisualizationProvider>
+                <SimulationProvider>
+                    <LayoutContent />
+                </SimulationProvider>
+            </VisualizationProvider>
         </ScaleProvider>
     </LayoutProvider>
   );

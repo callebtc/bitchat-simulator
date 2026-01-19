@@ -6,6 +6,7 @@ import * as THREE from 'three';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
 import { BitchatConnectionBLE, RSSI_CONFIG } from '../../simulation/BitchatConnectionBLE';
 import { useSelection } from '../context/SelectionContext';
+import { useVisualization } from '../context/VisualizationContext';
 import { MessageType } from '../../protocol/BitchatPacket';
 import { BitchatAppSimulator } from '../../simulation/AppLayer/BitchatAppSimulator';
 
@@ -49,6 +50,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
     const segmentBRef = useRef<any>(null); // Segment B->Mid
     
     const { selectedId, select } = useSelection();
+    const { showAnnouncePackets } = useVisualization();
     const engine = useSimulation();
     
     // Packet Visualization State
@@ -119,6 +121,10 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             // Check if this is an Origin transmission or a Relay
             const senderHex = Array.from(p.senderID as Uint8Array)
                 .map(b => b.toString(16).padStart(2, '0')).join('');
+                
+            // Filter Announce Packets if visualization disabled
+            if (!showAnnouncePackets && p.type === MessageType.ANNOUNCE) return;
+
             const isRelay = data.fromId !== senderHex;
             
             // Color Logic based on Type and TTL

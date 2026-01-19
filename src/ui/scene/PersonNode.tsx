@@ -2,9 +2,11 @@ import React, { useRef, useMemo, useEffect } from 'react';
 import { useFrame, ThreeEvent } from '@react-three/fiber';
 import { useSimulation } from '../context/SimulationContext';
 import { useSelection } from '../context/SelectionContext';
+import { useVisualization } from '../context/VisualizationContext';
 import * as THREE from 'three';
 import { Text } from '@react-three/drei';
 import { getPeerColor } from '../../utils/colorUtils';
+import { MessageType } from '../../protocol/BitchatPacket';
 
 interface PersonNodeProps {
     id: string;
@@ -13,6 +15,7 @@ interface PersonNodeProps {
 export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     const engine = useSimulation();
     const { selectedId, select, setDragging, highlightedId, setHighlightedId } = useSelection();
+    const { showAnnouncePackets } = useVisualization();
     const meshRef = useRef<THREE.Group>(null);
     
     // Data
@@ -37,6 +40,10 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
             if (data.fromId === peerIdHex) {
                 // Check if origin
                 const packet = data.packet;
+
+                // Filter Announce Packets if visualization disabled
+                if (!showAnnouncePackets && packet.type === MessageType.ANNOUNCE) return;
+
                 const senderHex = Array.from(packet.senderID as Uint8Array)
                     .map(b => b.toString(16).padStart(2, '0'))
                     .join('');
@@ -48,7 +55,7 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
         };
         engine.events.on('packet_transmitted', onPacket);
         return () => { engine.events.off('packet_transmitted', onPacket); };
-    }, [engine, peerIdHex]);
+    }, [engine, peerIdHex, showAnnouncePackets]);
     
     useFrame((_, delta) => {
         if (!meshRef.current || !person) return;

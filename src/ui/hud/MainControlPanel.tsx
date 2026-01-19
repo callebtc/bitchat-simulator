@@ -6,6 +6,7 @@ import { MovementMode } from '../../simulation/BitchatPerson';
 import { usePersistedState } from '../../utils/usePersistedState';
 import { EnvironmentSection } from './EnvironmentSection';
 import { useLayout } from '../context/LayoutContext';
+import { useVisualization } from '../context/VisualizationContext';
 
 // Types for history data
 interface HistoryPoint {
@@ -58,13 +59,52 @@ const TinyGraph: React.FC<{ data: HistoryPoint[], color: string, label: string, 
     );
 };
 
+const CollapsibleSection: React.FC<{
+    title: string;
+    isExpanded: boolean;
+    onToggle: () => void;
+    children: React.ReactNode;
+    icon?: React.ReactNode;
+}> = ({ title, isExpanded, onToggle, children, icon }) => {
+    return (
+        <div className="border-t border-gray-800 pt-2">
+            <button 
+                className="w-full flex justify-between items-center text-[10px] text-gray-500 hover:text-gray-300 transition-colors mb-1"
+                onClick={onToggle}
+            >
+                <span className="uppercase tracking-wider font-bold flex items-center gap-2">
+                    {icon}
+                    {title}
+                </span>
+                <svg 
+                    width="10" height="6" viewBox="0 0 10 6" fill="none" 
+                    className={`transform transition-transform ${isExpanded ? 'rotate-180' : ''}`}
+                >
+                    <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+            </button>
+            <div className={`overflow-hidden transition-all duration-300 ${isExpanded ? 'max-h-64 opacity-100' : 'max-h-0 opacity-0'}`}>
+                <div className="pt-1">
+                    {children}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 export const MainControlPanel: React.FC = () => {
     const engine = useSimulation();
     const { viewCenter } = useSelection();
     const { bottomPanelHeight } = useLayout();
+    const { showAnnouncePackets, setShowAnnouncePackets } = useVisualization();
+    
     const [currentTime, setCurrentTime] = useState(Date.now());
     const [isCollapsed, setIsCollapsed] = usePersistedState('main_panel_collapsed', false);
+    
+    // Collapsible states
     const [isStatsExpanded, setIsStatsExpanded] = usePersistedState('stats_section_expanded', true);
+    const [isVizExpanded, setIsVizExpanded] = usePersistedState('viz_section_expanded', true);
+    const [isPopExpanded, setIsPopExpanded] = usePersistedState('pop_section_expanded', true);
     
     // Spawn busy toggle - NOT persisted, defaults to off
     const [spawnBusy, setSpawnBusy] = useState(false);
@@ -187,6 +227,12 @@ export const MainControlPanel: React.FC = () => {
         });
     };
 
+    const handleTurnAllBusy = () => {
+        engine.getAllPeople().forEach(person => {
+            person.setMode(MovementMode.BUSY);
+        });
+    };
+
     return (
         <div 
             className="absolute top-4 left-4 w-72 bg-black/90 text-white p-3 rounded backdrop-blur-md border border-gray-800 shadow-2xl font-mono select-none pointer-events-auto transition-all duration-300 flex flex-col"
@@ -244,95 +290,138 @@ export const MainControlPanel: React.FC = () => {
                     </button>
                 </div>
                 
-                {/* Spawn Busy Toggle */}
-                <div className="flex items-center justify-between bg-gray-900/30 px-2 py-1.5 rounded border border-gray-800">
-                    <label className="text-[10px] text-gray-400 flex items-center gap-1.5 cursor-pointer select-none">
-                        <span className="uppercase tracking-wider">Spawn Busy</span>
-                        {spawnBusy && (
-                            <span className="text-[8px] text-amber-400 bg-amber-900/30 px-1 py-0.5 rounded">
-                                BUSY
-                            </span>
-                        )}
-                    </label>
-                    <button
-                        onClick={() => setSpawnBusy(!spawnBusy)}
-                        className={`relative w-8 h-4 rounded-full transition-colors ${
-                            spawnBusy ? 'bg-amber-600' : 'bg-gray-700'
-                        }`}
-                    >
-                        <div
-                            className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
-                                spawnBusy ? 'translate-x-4' : 'translate-x-0.5'
+                {/* Population Section */}
+                <CollapsibleSection 
+                    title="Population" 
+                    isExpanded={isPopExpanded} 
+                    onToggle={() => setIsPopExpanded(!isPopExpanded)}
+                    icon={
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="9" cy="7" r="4"></circle>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                        </svg>
+                    }
+                >
+                    <div className="space-y-2">
+                         {/* Spawn Busy Toggle */}
+                        <div className="flex items-center justify-between bg-gray-900/30 px-2 py-1.5 rounded border border-gray-800">
+                            <label className="text-[10px] text-gray-400 flex items-center gap-1.5 cursor-pointer select-none">
+                                <span className="uppercase tracking-wider">Spawn Busy</span>
+                                {spawnBusy && (
+                                    <span className="text-[8px] text-amber-400 bg-amber-900/30 px-1 py-0.5 rounded">
+                                        BUSY
+                                    </span>
+                                )}
+                            </label>
+                            <button
+                                onClick={() => setSpawnBusy(!spawnBusy)}
+                                className={`relative w-8 h-4 rounded-full transition-colors ${
+                                    spawnBusy ? 'bg-amber-600' : 'bg-gray-700'
+                                }`}
+                            >
+                                <div
+                                    className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                                        spawnBusy ? 'translate-x-4' : 'translate-x-0.5'
+                                    }`}
+                                />
+                            </button>
+                        </div>
+                        
+                        {/* Turn All Busy */}
+                         <button 
+                            className="w-full bg-amber-900/20 hover:bg-amber-900/40 text-amber-300 px-2 py-1.5 rounded text-[10px] font-bold border border-amber-900/50 transition-all"
+                            onClick={handleTurnAllBusy}
+                        >
+                            TURN ALL BUSY
+                        </button>
+                    </div>
+                </CollapsibleSection>
+
+                {/* Visualization Section */}
+                <CollapsibleSection
+                    title="Visualization"
+                    isExpanded={isVizExpanded}
+                    onToggle={() => setIsVizExpanded(!isVizExpanded)}
+                    icon={
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                            <circle cx="12" cy="12" r="3"></circle>
+                        </svg>
+                    }
+                >
+                     <div className="flex items-center justify-between bg-gray-900/30 px-2 py-1.5 rounded border border-gray-800">
+                        <label className="text-[10px] text-gray-400 flex items-center gap-1.5 cursor-pointer select-none">
+                            <span className="uppercase tracking-wider">Announce Pkts</span>
+                        </label>
+                        <button
+                            onClick={() => setShowAnnouncePackets(!showAnnouncePackets)}
+                            className={`relative w-8 h-4 rounded-full transition-colors ${
+                                showAnnouncePackets ? 'bg-cyan-600' : 'bg-gray-700'
                             }`}
-                        />
-                    </button>
-                </div>
+                        >
+                            <div
+                                className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                                    showAnnouncePackets ? 'translate-x-4' : 'translate-x-0.5'
+                                }`}
+                            />
+                        </button>
+                    </div>
+                </CollapsibleSection>
                 
                 {/* Statistics Section (Expandable) */}
-                <div className="border-t border-gray-800 pt-2">
-                    {/* Header */}
-                    <button 
-                        className="w-full flex justify-between items-center text-[10px] text-gray-500 hover:text-gray-300 transition-colors mb-1"
-                        onClick={() => setIsStatsExpanded(!isStatsExpanded)}
-                    >
-                        <span className="uppercase tracking-wider font-bold flex items-center gap-2">
-                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                <path d="M18 20V10"/>
-                                <path d="M12 20V4"/>
-                                <path d="M6 20v-6"/>
-                            </svg>
-                            Statistics
-                        </span>
-                        <svg 
-                            width="10" height="6" viewBox="0 0 10 6" fill="none" 
-                            className={`transform transition-transform ${isStatsExpanded ? 'rotate-180' : ''}`}
-                        >
-                            <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                <CollapsibleSection
+                    title="Statistics"
+                    isExpanded={isStatsExpanded}
+                    onToggle={() => setIsStatsExpanded(!isStatsExpanded)}
+                    icon={
+                        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M18 20V10"/>
+                            <path d="M12 20V4"/>
+                            <path d="M6 20v-6"/>
                         </svg>
-                    </button>
-                    
-                    {/* Expandable Content */}
-                    <div className={`overflow-hidden transition-all duration-300 ${isStatsExpanded ? 'max-h-64 opacity-100' : 'max-h-0 opacity-0'}`}>
-                        <div className="space-y-2 pt-1">
-                            {/* Packet Stats */}
-                            <div className="space-y-1">
-                                <div className="text-[10px] text-gray-500 uppercase tracking-wider border-b border-gray-800 pb-1 mb-1">Packet Traffic</div>
-                                <div className="grid grid-cols-4 gap-1 text-center">
-                                    <div>
-                                        <div className="text-[9px] text-gray-600">1s</div>
-                                        <div className="text-xs text-white">{count1s}</div>
-                                    </div>
-                                    <div>
-                                        <div className="text-[9px] text-gray-600">10s</div>
-                                        <div className="text-xs text-white">{count10s}</div>
-                                    </div>
-                                    <div>
-                                        <div className="text-[9px] text-gray-600">1m</div>
-                                        <div className="text-xs text-white">{count1m}</div>
-                                    </div>
-                                    <div>
-                                        <div className="text-[9px] text-gray-600">Total</div>
-                                        <div className="text-xs text-white">{statsRef.current.totalPackets}</div>
-                                    </div>
+                    }
+                >
+                    <div className="space-y-2">
+                        {/* Packet Stats */}
+                        <div className="space-y-1">
+                            <div className="text-[10px] text-gray-500 uppercase tracking-wider border-b border-gray-800 pb-1 mb-1">Packet Traffic</div>
+                            <div className="grid grid-cols-4 gap-1 text-center">
+                                <div>
+                                    <div className="text-[9px] text-gray-600">1s</div>
+                                    <div className="text-xs text-white">{count1s}</div>
+                                </div>
+                                <div>
+                                    <div className="text-[9px] text-gray-600">10s</div>
+                                    <div className="text-xs text-white">{count10s}</div>
+                                </div>
+                                <div>
+                                    <div className="text-[9px] text-gray-600">1m</div>
+                                    <div className="text-xs text-white">{count1m}</div>
+                                </div>
+                                <div>
+                                    <div className="text-[9px] text-gray-600">Total</div>
+                                    <div className="text-xs text-white">{statsRef.current.totalPackets}</div>
                                 </div>
                             </div>
+                        </div>
 
-                            {/* Graphs */}
-                            <div className="flex gap-2 justify-between border-t border-gray-800 pt-2 w-full">
-                                <TinyGraph 
-                                    data={statsRef.current.connectionHistory} 
-                                    color="#4ade80" 
-                                    label="CONNS" 
-                                />
-                                <TinyGraph 
-                                    data={statsRef.current.ppsHistory} 
-                                    color="#22d3ee" 
-                                    label="PKT/S" 
-                                />
-                            </div>
+                        {/* Graphs */}
+                        <div className="flex gap-2 justify-between border-t border-gray-800 pt-2 w-full">
+                            <TinyGraph 
+                                data={statsRef.current.connectionHistory} 
+                                color="#4ade80" 
+                                label="CONNS" 
+                            />
+                            <TinyGraph 
+                                data={statsRef.current.ppsHistory} 
+                                color="#22d3ee" 
+                                label="PKT/S" 
+                            />
                         </div>
                     </div>
-                </div>
+                </CollapsibleSection>
 
                 {/* Environment Section */}
                 <EnvironmentSection />
