@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { Canvas, useThree, useFrame } from '@react-three/fiber';
 import { OrbitControls, OrthographicCamera } from '@react-three/drei';
 import { useSimulation } from '../context/SimulationContext';
@@ -29,9 +29,16 @@ interface SceneProps {
 
 export const Scene: React.FC<SceneProps> = ({ bottomPanelHeight = 32 }) => {
     const engine = useSimulation();
-    const { isDragging } = useSelection();
+    const { isDragging, setHighlightedId } = useSelection();
     const [personIds, setPersonIds] = useState<string[]>([]);
     const [connections, setConnections] = useState<BitchatConnection[]>([]);
+    
+    // Clear highlight when mouse leaves the canvas entirely
+    // This fixes stuck hover states when pointer events don't fire properly
+    const handleCanvasPointerLeave = useCallback(() => {
+        setHighlightedId(null);
+        document.body.style.cursor = 'default';
+    }, [setHighlightedId]);
 
     useEffect(() => {
         // Initial state
@@ -72,7 +79,7 @@ export const Scene: React.FC<SceneProps> = ({ bottomPanelHeight = 32 }) => {
     }, [engine]);
 
     return (
-        <div className="w-full h-screen bg-gray-900">
+        <div className="w-full h-screen bg-gray-900" onPointerLeave={handleCanvasPointerLeave}>
             <Canvas>
                 <OrthographicCamera makeDefault position={[0, 0, 100]} zoom={2} />
                 <OrbitControls 

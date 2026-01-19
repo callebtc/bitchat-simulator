@@ -40,34 +40,33 @@ export const PathVisualizer: React.FC = () => {
     }, [highlightedId, engine]);
 
     // Subscribe to path calculation events
+    // Only show path animation for user-initiated navigation (TARGET mode), not BUSY mode
     useEffect(() => {
         const people = engine.getAllPeople();
         
         const callbacks: { person: BitchatPerson; callback: () => void }[] = [];
         
+        const createCallback = (person: BitchatPerson) => (path: Point[], target: Point) => {
+            // Skip animation for BUSY mode - these are automatic and would cause flickering
+            if (person.mode === MovementMode.BUSY) return;
+            
+            setAnimatedPath({
+                personId: person.id,
+                waypoints: path,
+                target,
+                startTime: performance.now(),
+            });
+        };
+        
         for (const person of people) {
-            const callback = (path: Point[], target: Point) => {
-                setAnimatedPath({
-                    personId: person.id,
-                    waypoints: path,
-                    target,
-                    startTime: performance.now(),
-                });
-            };
+            const callback = createCallback(person);
             person.onPathCalculated = callback;
             callbacks.push({ person, callback: () => { person.onPathCalculated = undefined; } });
         }
         
         // Listen for new people
         const onPersonAdded = (person: BitchatPerson) => {
-            const callback = (path: Point[], target: Point) => {
-                setAnimatedPath({
-                    personId: person.id,
-                    waypoints: path,
-                    target,
-                    startTime: performance.now(),
-                });
-            };
+            const callback = createCallback(person);
             person.onPathCalculated = callback;
             callbacks.push({ person, callback: () => { person.onPathCalculated = undefined; } });
         };
