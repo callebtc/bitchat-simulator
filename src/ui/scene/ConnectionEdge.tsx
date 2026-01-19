@@ -197,7 +197,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                 color={lineColor}
                 transparent
                 opacity={isDimmed ? 0.2 : (isHighlighted ? 0.8 : 0.6)}
-                lineWidth={isHighlighted ? 5 : 3}
+                lineWidth={isHighlighted ? 3 : 1.5}
             />
             
             {/* Click Hit Area (invisible thicker line) */}

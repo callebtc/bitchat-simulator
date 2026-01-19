@@ -97,7 +97,7 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
                 onPointerEnter={handlePointerEnter}
                 onPointerLeave={handlePointerLeave}
             >
-                <circleGeometry args={[5, 32]} />
+                <circleGeometry args={[3.75, 32]} />
                 <meshBasicMaterial 
                     color={color} 
                     transparent
@@ -105,7 +105,7 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
                 />
             </mesh>
             <mesh>
-                 <ringGeometry args={[5, isSelected ? 6 : (isHighlighted ? 5.8 : 5.2), 32]} />
+                 <ringGeometry args={[3.75, isSelected ? 4.5 : (isHighlighted ? 4.35 : 3.9), 32]} />
                  <meshBasicMaterial 
                     color={isSelected || isHighlighted ? 'white' : 'black'} 
                     transparent
@@ -113,8 +113,8 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
                 />
             </mesh>
             <Text 
-                position={[0, -8, 0]} 
-                fontSize={4}
+                position={[0, -6, 0]} 
+                fontSize={3}
                 color={isHighlighted ? "#ffff00" : "white"}
                 anchorX="center"
                 anchorY="top"
