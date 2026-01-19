@@ -41,7 +41,7 @@ export class BitchatPerson {
     
     // Random Walk Params
     private wanderAngle: number = 0;
-    private readonly MAX_SPEED = 1.5; // reduced from 20 to 1.5 m/s (~5.4 km/h)
+    private maxSpeed: number; // Randomized per person
     private readonly WANDER_STRENGTH = 0.5; // rad/s change
     /** Distance threshold to consider waypoint reached */
     private readonly WAYPOINT_THRESHOLD = 2;
@@ -75,6 +75,10 @@ export class BitchatPerson {
         this.velocity = { x: 0, y: 0 };
         this.device = device;
         this.device.position = this.position; // Link position
+        
+        // Randomize max speed between 1.0 and 3.0 m/s (average 2.0)
+        // Previous static default was 1.5
+        this.maxSpeed = 1.0 + Math.random() * 2.0; 
     }
 
     setLogger(logger: LogManager) {
@@ -90,8 +94,8 @@ export class BitchatPerson {
         if (mode === MovementMode.RANDOM_WALK) {
             // Kickstart
              this.velocity = { 
-                 x: (Math.random() - 0.5) * this.MAX_SPEED, 
-                 y: (Math.random() - 0.5) * this.MAX_SPEED 
+                 x: (Math.random() - 0.5) * this.maxSpeed, 
+                 y: (Math.random() - 0.5) * this.maxSpeed 
              };
         }
         if (mode === MovementMode.BUSY) {
@@ -346,8 +350,8 @@ export class BitchatPerson {
         this.mode = MovementMode.RANDOM_WALK;
         this.wanderAngle = Math.random() * Math.PI * 2;
         this.velocity = { 
-            x: Math.cos(this.wanderAngle) * this.MAX_SPEED * 0.5, 
-            y: Math.sin(this.wanderAngle) * this.MAX_SPEED * 0.5 
+            x: Math.cos(this.wanderAngle) * this.maxSpeed * 0.5, 
+            y: Math.sin(this.wanderAngle) * this.maxSpeed * 0.5 
         };
     }
     
@@ -455,7 +459,7 @@ export class BitchatPerson {
         this.wanderAngle += (Math.random() - 0.5) * this.WANDER_STRENGTH;
         
         // Desired velocity
-        const speed = this.MAX_SPEED * 0.5; // Half speed for wandering
+        const speed = this.maxSpeed * 0.5; // Half speed for wandering
         const vx = Math.cos(this.wanderAngle) * speed;
         const vy = Math.sin(this.wanderAngle) * speed;
         
@@ -518,7 +522,7 @@ export class BitchatPerson {
                 (this.target.y - this.position.y) ** 2
             ) : dist;
         
-        const speed = Math.min(this.MAX_SPEED, distToFinal * 2);
+        const speed = Math.min(this.maxSpeed, distToFinal * 2);
         this.velocity.x = (dx / dist) * speed;
         this.velocity.y = (dy / dist) * speed;
     }
@@ -584,7 +588,7 @@ export class BitchatPerson {
                     (this.target.y - this.position.y) ** 2
                 ) : dist;
             
-            const speed = Math.min(this.MAX_SPEED, Math.max(distToFinal * 2, this.MAX_SPEED * 0.5));
+            const speed = Math.min(this.maxSpeed, Math.max(distToFinal * 2, this.maxSpeed * 0.5));
             this.velocity.x = (dx / dist) * speed;
             this.velocity.y = (dy / dist) * speed;
         }

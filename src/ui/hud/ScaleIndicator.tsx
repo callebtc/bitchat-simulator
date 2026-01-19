@@ -1,21 +1,21 @@
-import React, { useState, useRef } from 'react';
+import React, { useRef } from 'react';
 import { useThree, useFrame } from '@react-three/fiber';
-import { Html } from '@react-three/drei';
 import { OrthographicCamera } from 'three';
+import { useScale } from '../context/ScaleContext';
+import { useLayout } from '../context/LayoutContext';
 
-interface ScaleIndicatorProps {
-    bottomOffset?: number;
-}
-
-export const ScaleIndicator: React.FC<ScaleIndicatorProps> = ({ bottomOffset = 32 }) => {
+/**
+ * Updates the scale context based on the current camera zoom.
+ * Must be placed inside <Canvas>.
+ */
+export const ScaleUpdater: React.FC = () => {
     const { camera } = useThree();
-    const [scaleData, setScaleData] = useState({ width: 0, label: '' });
+    const { setScaleData } = useScale();
     const lastZoomRef = useRef<number>(0);
 
     useFrame(() => {
         if (!(camera instanceof OrthographicCamera)) return;
 
-        // Current zoom level
         const zoom = camera.zoom;
 
         // Optimization: only update if zoom changed significantly
@@ -23,15 +23,7 @@ export const ScaleIndicator: React.FC<ScaleIndicatorProps> = ({ bottomOffset = 3
         lastZoomRef.current = zoom;
 
         // Logic:
-        // We want a bar that is roughly 100-200 pixels wide.
         // In Orthographic camera (drei default), 1 unit = 'zoom' pixels (usually).
-        // Let's verify this assumption:
-        // By default, Drei's OrthographicCamera sets boundaries such that 
-        // the view size matches the canvas size, but scaled by zoom.
-        // Actually, typically: 1 world unit = 1 pixel at zoom=1?
-        // Let's assume 1 world unit = 1 meter.
-        // Pixels per meter = zoom.
-
         const pixelsPerMeter = zoom;
         
         // Target width in pixels
@@ -58,22 +50,31 @@ export const ScaleIndicator: React.FC<ScaleIndicatorProps> = ({ bottomOffset = 3
         });
     });
 
+    return null;
+};
+
+/**
+ * Renders the scale indicator UI.
+ * Must be placed OUTSIDE <Canvas>.
+ */
+export const ScaleOverlay: React.FC = () => {
+    const { scaleData } = useScale();
+    const { bottomPanelHeight } = useLayout();
+
     if (scaleData.width === 0) return null;
 
     return (
-        <Html fullscreen style={{ pointerEvents: 'none' }}>
+        <div 
+            className="absolute right-8 flex flex-col items-end opacity-80 transition-all duration-300 pointer-events-none select-none z-10"
+            style={{ bottom: (bottomPanelHeight + 16) + 'px' }}
+        >
             <div 
-                className="absolute right-8 flex flex-col items-end opacity-80 transition-all duration-300"
-                style={{ bottom: (bottomOffset + 16) + 'px' }}
-            >
-                <div 
-                    className="border-b-2 border-l-2 border-r-2 border-white mb-1"
-                    style={{ width: scaleData.width, height: '8px' }}
-                />
-                <span className="text-white text-xs font-mono font-bold text-shadow">
-                    {scaleData.label}
-                </span>
-            </div>
-        </Html>
+                className="border-b-2 border-l-2 border-r-2 border-white mb-1"
+                style={{ width: scaleData.width, height: '8px' }}
+            />
+            <span className="text-white text-xs font-mono font-bold text-shadow">
+                {scaleData.label}
+            </span>
+        </div>
     );
 };
