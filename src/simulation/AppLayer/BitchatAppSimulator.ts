@@ -4,6 +4,7 @@ import { BitchatPacket, MessageType, createPacket, SpecialRecipients, calculateP
 import { TLV, TLVType } from '../../protocol/TLV';
 import { LogManager } from '../LogManager';
 import { getPeerColor } from '../../utils/colorUtils';
+import { MeshGraph } from './MeshGraph';
 
 const ANNOUNCE_INTERVAL = 5000; // 5 seconds
 const MAX_TTL = 7;
@@ -20,6 +21,7 @@ export interface ChatMessage {
 export class BitchatAppSimulator {
     device: BitchatDevice;
     peerManager: PeerManager;
+    meshGraph: MeshGraph;
     messages: ChatMessage[] = [];
     
     private lastAnnounceTime: number = -1;
@@ -33,6 +35,7 @@ export class BitchatAppSimulator {
     constructor(device: BitchatDevice) {
         this.device = device;
         this.peerManager = new PeerManager();
+        this.meshGraph = new MeshGraph();
         this.device.onPacketReceived = (p, from) => this.handlePacket(p, from);
     }
 
@@ -89,6 +92,10 @@ export class BitchatAppSimulator {
             SpecialRecipients.BROADCAST
         );
 
+        // Update my own graph with my direct neighbors so I can calculate paths correctly
+        // (Wait, MeshGraph needs other peers' announcements. I know my own connections.)
+        this.meshGraph.updateFromAnnouncement(this.device.peerIDHex, connectedPeers.map(p => p.peerIDHex));
+
         // Mark as seen so we don't echo it back if it loops
         this.markSeen(packet);
         this.device.connectionManager.broadcast(packet);
@@ -106,9 +113,37 @@ export class BitchatAppSimulator {
         
         // Resolve Recipient
         let recipientID: Uint8Array | undefined = undefined;
+        let route: Uint8Array[] | undefined = undefined;
+        let nextHopHex: string | undefined = undefined;
+
         if (recipientIdHex) {
             // Hex string to Uint8Array
-            recipientID = new Uint8Array(recipientIdHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+            recipientID = this.hexToBytes(recipientIdHex);
+            
+            // Source Routing: Calculate path
+            const path = this.meshGraph.getShortestPath(this.device.peerIDHex, recipientIdHex);
+            
+            if (path && path.length > 1) {
+                // Path includes [Start, Hop1, Hop2, ..., End]
+                // Route field excludes Start and End
+                const intermediateHops = path.slice(1, path.length - 1);
+                
+                // If there are intermediate hops, populate route
+                if (intermediateHops.length > 0) {
+                    route = intermediateHops.map(hex => this.hexToBytes(hex));
+                }
+                
+                // First hop is the immediate next node in the path (index 1)
+                nextHopHex = path[1];
+                
+                this.log(`Computed Source Route`, { 
+                    to: recipientIdHex.substring(0, 6),
+                    path: path.map(h => h.substring(0,6)).join('->'),
+                    hops: intermediateHops.length
+                });
+            } else {
+                this.log(`No route found`, { to: recipientIdHex.substring(0, 6) }, 'DEBUG');
+            }
         }
         
         const packet = createPacket(
@@ -118,6 +153,11 @@ export class BitchatAppSimulator {
             MAX_TTL,
             recipientID || SpecialRecipients.BROADCAST
         );
+        
+        if (route) {
+            packet.version = 2; // Must upgrade to V2 for routing
+            packet.route = route;
+        }
         
         // Store locally
         this.messages.push({
@@ -129,11 +169,25 @@ export class BitchatAppSimulator {
             isOutgoing: true
         });
         
-        // Mark seen and send
+        // Mark seen
         this.markSeen(packet);
-        this.device.connectionManager.broadcast(packet);
-        
-        this.log(recipientID ? `Sent DM` : `Sent Broadcast`, { text: text });
+
+        // Send Logic
+        let sent = false;
+        if (nextHopHex) {
+             // Unicast to first hop
+             sent = this.device.connectionManager.sendTo(nextHopHex, packet);
+             if (sent) {
+                 this.log(`Unicast Message (Source Routed)`, { nextHop: nextHopHex.substring(0,6) });
+             } else {
+                 this.log(`Failed to unicast to next hop, falling back to broadcast`, { nextHop: nextHopHex.substring(0,6) }, 'DEBUG');
+             }
+        }
+
+        if (!sent) {
+            this.device.connectionManager.broadcast(packet);
+            this.log(recipientID ? `Sent DM (Broadcast)` : `Sent Broadcast`, { text: text });
+        }
     }
 
     private handlePacket(packet: BitchatPacket, from: BitchatDevice) {
@@ -155,7 +209,8 @@ export class BitchatAppSimulator {
             from: from.nickname,
             sender: senderHex.substring(0,6),
             ttl: packet.ttl,
-            recipient: packet.recipientID ? this.toHex(packet.recipientID).substring(0,6) : 'BROADCAST'
+            recipient: packet.recipientID ? this.toHex(packet.recipientID).substring(0,6) : 'BROADCAST',
+            routed: !!packet.route
         });
 
         // 2. Process Packet
@@ -174,13 +229,62 @@ export class BitchatAppSimulator {
         const relayPacket = { ...packet, ttl: packet.ttl - 1 };
         
         const isForMe = this.isForMe(packet);
-        if (!isForMe || packet.recipientID === undefined) {
-             // Split Horizon: Don't send back to 'from'
-             this.log(`Relaying ${typeStr}`, {
-                 ttl: relayPacket.ttl,
-                 receivedFrom: from.nickname
-             });
-             this.device.connectionManager.broadcast(relayPacket, from);
+        
+        // If it's for me, we don't relay unless it's a broadcast (which is already handled by !recipientID check below)
+        // But spec says "If I am not in the route, I am not a designated relay."
+        
+        if (isForMe && packet.recipientID) {
+            // Consumed, do not relay
+            return;
+        }
+
+        // Source Routing Logic
+        let routed = false;
+        if (packet.route && packet.version >= 2) {
+             const myHex = this.device.peerIDHex;
+             const routeHexes = packet.route.map(r => this.toHex(r));
+             const myIndex = routeHexes.indexOf(myHex);
+             
+             if (myIndex !== -1) {
+                 // I am in the route. Find next hop.
+                 // Route list contains intermediate hops.
+                 // [Hop1, Hop2, Hop3]
+                 // If I am Hop1 (index 0), next is Hop2 (index 1).
+                 // If I am Hop3 (index 2), next is Recipient.
+                 
+                 let nextHopHex: string;
+                 if (myIndex + 1 < routeHexes.length) {
+                     nextHopHex = routeHexes[myIndex + 1];
+                 } else {
+                     // Last hop in route, next is Recipient
+                     nextHopHex = this.toHex(packet.recipientID!);
+                 }
+                 
+                 // Try Unicast
+                 const success = this.device.connectionManager.sendTo(nextHopHex, relayPacket);
+                 if (success) {
+                     this.log(`Relaying Source Routed Packet`, { nextHop: nextHopHex.substring(0,6) });
+                     routed = true;
+                 } else {
+                     this.log(`Route Broken: Failed to send to ${nextHopHex.substring(0,6)}, flooding`, {}, 'DEBUG');
+                     // Fallback to flood
+                 }
+             } else {
+                 // I am not in the route.
+                 // If I received this via unicast (mistake?) or flood fallback, I should probably flood it to ensure delivery.
+                 // Spec says: "If NO (Standard): Flood". Implicitly if not in route, treat as standard?
+                 this.log(`Not in route, flooding`, {}, 'DEBUG');
+             }
+        }
+
+        if (!routed) {
+            // Default Flood / Fallback
+            if (packet.recipientID === undefined || !isForMe) { // Don't relay if it was for me (already checked above but safe to double check)
+                 // Split Horizon: Don't send back to 'from'
+                 this.device.connectionManager.broadcast(relayPacket, from);
+                 // Only log generic relay if not too verbose
+                 // this.log(`Relaying Flood`, { ttl: relayPacket.ttl });
+            }
         }
     }
     
@@ -235,11 +339,22 @@ export class BitchatAppSimulator {
         // Decode payload
         const tlvs = TLV.decode(packet.payload);
         const nickBytes = tlvs.get(TLVType.NICKNAME);
+        const neighborsBytes = tlvs.get(TLVType.DIRECT_NEIGHBORS);
         const senderHex = this.toHex(packet.senderID);
         
         let nickname = "Unknown";
         if (nickBytes) {
             nickname = TLV.decodeNickname(nickBytes!);
+        }
+        
+        // Update Mesh Graph with Neighbors
+        if (neighborsBytes) {
+            const neighborIDs = TLV.decodeNeighbors(neighborsBytes);
+            const neighborHexes = neighborIDs.map(id => this.toHex(id));
+            this.meshGraph.updateFromAnnouncement(senderHex, neighborHexes);
+        } else {
+            // If no neighbors TLV, assume empty list (isolated) or just update nickname
+            this.meshGraph.updateFromAnnouncement(senderHex, []);
         }
 
         // Is this a direct neighbor?
@@ -262,5 +377,9 @@ export class BitchatAppSimulator {
 
     private toHex(arr: Uint8Array): string {
          return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    private hexToBytes(hex: string): Uint8Array {
+        return new Uint8Array(hex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
     }
 }
