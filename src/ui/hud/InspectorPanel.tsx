@@ -7,7 +7,7 @@ import { getPeerColor } from '../../utils/colorUtils';
 import { PowerMode } from '../../simulation/BitchatDevice';
 
 export const InspectorPanel: React.FC = () => {
-    const { selectedId, selectionType, select } = useSelection();
+    const { selectedId, selectionType, select, setChatRecipientId } = useSelection();
     const engine = useSimulation();
     const [, forceUpdate] = useState(0);
 
@@ -157,7 +157,11 @@ export const InspectorPanel: React.FC = () => {
                     <h3 className="font-bold text-yellow-400 mb-1">Peer Table ({knownPeers.length})</h3>
                     <ul className="space-y-2 pl-2">
                         {knownPeers.map(p => (
-                            <li key={p.id} className="text-xs">
+                            <li 
+                                key={p.id} 
+                                className="text-xs cursor-pointer hover:bg-white/10 rounded p-1"
+                                onClick={() => setChatRecipientId(p.id)}
+                            >
                                 <div className="flex justify-between">
                                     <span>
                                         <span style={{ color: getPeerColor(p.id) }}>{p.nickname}</span>

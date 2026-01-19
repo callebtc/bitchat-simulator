@@ -8,9 +8,20 @@ import { getPeerColor } from '../../utils/colorUtils';
 const ANNOUNCE_INTERVAL = 5000; // 5 seconds
 const MAX_TTL = 7;
 
+export interface ChatMessage {
+    id: string;
+    timestamp: number;
+    senderId: string;
+    recipientId?: string; // undefined = Broadcast
+    text: string;
+    isOutgoing: boolean;
+}
+
 export class BitchatAppSimulator {
     device: BitchatDevice;
     peerManager: PeerManager;
+    messages: ChatMessage[] = [];
+    
     private lastAnnounceTime: number = 0;
     private seenPackets: Set<string> = new Set();
     private logger?: LogManager;
@@ -76,6 +87,43 @@ export class BitchatAppSimulator {
         }, 'DEBUG');
     }
 
+    sendMessage(text: string, recipientIdHex?: string) {
+        // Encode Text
+        const encoder = new TextEncoder();
+        const payload = encoder.encode(text);
+        
+        // Resolve Recipient
+        let recipientID: Uint8Array | undefined = undefined;
+        if (recipientIdHex) {
+            // Hex string to Uint8Array
+            recipientID = new Uint8Array(recipientIdHex.match(/.{1,2}/g)!.map(byte => parseInt(byte, 16)));
+        }
+        
+        const packet = createPacket(
+            MessageType.MESSAGE,
+            this.device.peerID,
+            payload,
+            MAX_TTL,
+            recipientID || SpecialRecipients.BROADCAST
+        );
+        
+        // Store locally
+        this.messages.push({
+            id: this.getPacketId(packet),
+            timestamp: Date.now(),
+            senderId: this.device.peerIDHex,
+            recipientId: recipientIdHex,
+            text: text,
+            isOutgoing: true
+        });
+        
+        // Mark seen and send
+        this.markSeen(packet);
+        this.device.connectionManager.broadcast(packet);
+        
+        this.log(recipientID ? `Sent DM` : `Sent Broadcast`, { text: text });
+    }
+
     private handlePacket(packet: BitchatPacket, from: BitchatDevice) {
         const packetId = this.getPacketId(packet);
         const typeStr = packet.type === MessageType.ANNOUNCE ? 'ANNOUNCE' : 'MESSAGE';
@@ -101,6 +149,8 @@ export class BitchatAppSimulator {
         // 2. Process Packet
         if (packet.type === MessageType.ANNOUNCE) {
             this.handleAnnounce(packet, from);
+        } else if (packet.type === MessageType.MESSAGE) {
+            this.handleMessage(packet, senderHex);
         }
 
         // 3. Relay Logic
@@ -122,6 +172,37 @@ export class BitchatAppSimulator {
         }
     }
     
+    private handleMessage(packet: BitchatPacket, senderHex: string) {
+        // Decode
+        const decoder = new TextDecoder();
+        const text = decoder.decode(packet.payload);
+        
+        let recipientHex: string | undefined = undefined;
+        if (packet.recipientID && !this.isBroadcast(packet.recipientID)) {
+            recipientHex = this.toHex(packet.recipientID);
+        }
+        
+        // Store if Broadcast or For Me
+        const isForMe = this.isForMe(packet);
+        if (!recipientHex || isForMe) {
+            this.messages.push({
+                id: this.getPacketId(packet),
+                timestamp: Number(packet.timestamp), // Convert BigInt
+                senderId: senderHex,
+                recipientId: recipientHex,
+                text: text,
+                isOutgoing: false
+            });
+        }
+    }
+    
+    private isBroadcast(arr: Uint8Array): boolean {
+        for(let i=0; i<8; i++) {
+            if (arr[i] !== 0xFF) return false;
+        }
+        return true;
+    }
+
     private getPacketId(packet: BitchatPacket): string {
         return calculatePacketHash(packet);
     }

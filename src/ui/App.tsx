@@ -4,6 +4,7 @@ import { SelectionProvider } from './context/SelectionContext';
 import { Scene } from './scene/Scene';
 import { InspectorPanel } from './hud/InspectorPanel';
 import { MainControlPanel } from './hud/MainControlPanel';
+import { BottomPanel } from './hud/BottomPanel';
 
 import { setupDemo } from '../simulation/DemoSetup';
 
@@ -19,8 +20,6 @@ const SimulationController = () => {
     return null;
 };
 
-import { LogPanel } from './hud/LogPanel';
-
 // ... (previous imports)
 
 function App() {
@@ -31,7 +30,7 @@ function App() {
             <Scene />
             <MainControlPanel />
             <InspectorPanel />
-            <LogPanel />
+            <BottomPanel />
         </SelectionProvider>
     </SimulationProvider>
   );
