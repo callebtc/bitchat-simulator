@@ -98,11 +98,9 @@ export const MainControlPanel: React.FC = () => {
         };
         
         const handleEnvironmentLoaded = (data: { buildingCount: number }) => {
-            // Turn on spawn busy when map is loaded, turn off when cleared
+            // Turn on spawn busy when map is loaded
             if (data.buildingCount > 0) {
                 setSpawnBusy(true);
-            } else {
-                setSpawnBusy(false);
             }
         };
 

@@ -203,13 +203,16 @@ export class BitchatPerson {
 
         // CASE 2: Outdoors - search global bounds but exclude buildings
         const bounds = this.environment.getBounds();
-        if (!bounds) return null; // Should be handled by environment check above, but for type safety
         
-        const { localBounds } = bounds;
+        // If no bounds (no map loaded), use default area
+        const minX = bounds ? bounds.localBounds.minX : -400;
+        const maxX = bounds ? bounds.localBounds.maxX : 400;
+        const minY = bounds ? bounds.localBounds.minY : -400;
+        const maxY = bounds ? bounds.localBounds.maxY : 400;
         
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            const x = localBounds.minX + Math.random() * (localBounds.maxX - localBounds.minX);
-            const y = localBounds.minY + Math.random() * (localBounds.maxY - localBounds.minY);
+            const x = minX + Math.random() * (maxX - minX);
+            const y = minY + Math.random() * (maxY - minY);
             const candidate = { x, y };
             
             // Check if it's outside ALL buildings
