@@ -305,7 +305,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
 
                  {/* Flying Packets (Even in Graph Mode) */}
                  {packets
-                    .filter(p => !selectedPeerIDHex || p.senderId === selectedPeerIDHex || p.type === MessageType.ANNOUNCE)
+                    .filter(p => !highlightOwnMesh || !selectedPeerIDHex || p.senderId === selectedPeerIDHex)
                     .map(p => {
                     const posA = connection.endpointA.position!;
                     const posB = connection.endpointB.position!;
@@ -355,7 +355,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
 
                 {/* Flying Packets */}
                 {packets
-                    .filter(p => !selectedPeerIDHex || p.senderId === selectedPeerIDHex || p.type === MessageType.ANNOUNCE)
+                    .filter(p => !highlightOwnMesh || !selectedPeerIDHex || p.senderId === selectedPeerIDHex)
                     .map(p => {
                     const posA = connection.endpointA.position!;
                     const posB = connection.endpointB.position!;
