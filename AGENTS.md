@@ -1,6 +1,6 @@
 # Agent Guidelines for Bitchat Simulator
 
-This document provides context and rules for AI agents operating in this codebase.
+This document provides context, rules, and best practices for AI agents operating in this codebase.
 
 ## 1. Environment & Commands
 
@@ -9,69 +9,119 @@ This document provides context and rules for AI agents operating in this codebas
 - **Package Manager**: npm
 
 ### Key Commands
-- **Build**: `npm run build` (runs `tsc && vite build`)
-- **Lint**: `npm run lint` (runs `eslint . --ext ts,tsx`)
-- **Test All**: `npm run test` (runs `vitest`)
-- **Test Single File**: `npx vitest run path/to/file.test.ts`
-- **Type Check**: `npx tsc --noEmit`
+- **Build**: `npm run build` (runs `tsc && vite build`) - Always run before finishing major tasks.
+- **Lint**: `npm run lint` (runs `eslint . --ext ts,tsx`) - Must pass with 0 warnings.
+- **Test All**: `npm run test` (runs `vitest`) - Run after logic changes.
+- **Test Single File**: `npx vitest run src/path/to/file.test.ts`
+- **Type Check**: `npx tsc --noEmit` - Ensure no type errors exist.
+- **Dev Server**: `npm run dev` - Starts Vite server (usually not needed for agents).
 
-## 2. Code Style & Conventions
+## 2. Directory Structure
+
+Understanding the project layout is crucial for navigation:
+
+- `src/simulation/` - **Core Logic**. Standalone simulation engine.
+    - `SimulationEngine.ts`: Main loop and state container.
+    - `BitchatPerson.ts`: Represents an entity in the world.
+    - `BitchatConnection.ts` & subclasses: Network connection logic.
+    - `environment/`: Physics, pathfinding, and obstacles.
+- `src/ui/` - **View Layer**. React + Three.js components.
+    - `context/`: React Contexts (Simulation, Selection, Layout).
+    - `scene/`: 3D World rendering (R3F components).
+    - `hud/`: 2D UI overlays (Control panels, inspectors).
+- `src/protocol/` - **Binary Protocol**.
+    - `BinaryProtocol.ts`: Encoding/decoding logic.
+    - `BitchatPacket.ts`: Packet definitions.
+- `src/events/` - **Communication**.
+    - `EventBus.ts`: Pub/sub system bridging Simulation and UI.
+- `src/utils/` - Shared utilities.
+
+## 3. Code Style & Conventions
 
 ### Formatting
-- **Indentation**: The codebase has mixed indentation.
-  - Core logic / Simulation files (`src/simulation`, `src/protocol`): **4 spaces**.
-  - React components (`src/ui`): **Mostly 4 spaces**, but some files (e.g., `App.tsx`) use 2 spaces.
-  - **Rule**: Inspect the file you are editing and match its existing indentation. New files should default to **4 spaces**.
-- **Quotes**: Single quotes `'` preferred, but respect existing file usage.
-- **Semicolons**: Always use semicolons.
+- **Indentation**: Mixed. **Respect existing file style**.
+    - Simulation/Protocol: **4 spaces**.
+    - React/UI: Mostly **4 spaces**, check file first.
+- **Quotes**: Single quotes `'` preferred.
+- **Semicolons**: **Always** use semicolons.
+- **Trailing Commas**: ES5 style (objects/arrays).
+
+### Imports
+Organize imports in groups, separated by a blank line:
+1.  **External Libraries** (`react`, `three`, `vitest`)
+2.  **Internal Modules** (`../simulation/Engine`, `./Component`)
+3.  **Styles/Assets** (`./styles.css`)
 
 ### Naming
-- **Files**: PascalCase for React components (`PersonNode.tsx`) and Classes (`SimulationEngine.ts`). CamelCase for utils if applicable.
-- **Components/Classes**: PascalCase (`SimulationEngine`, `PersonNode`).
-- **Variables/Functions**: camelCase (`isRunning`, `addPerson`).
-- **Constants**: UPPER_SNAKE_CASE (`CONNECT_RADIUS`, `HEADER_SIZE_V1`).
+- **Files**:
+    - React Components/Classes: `PascalCase` (e.g., `PersonNode.tsx`, `SimulationEngine.ts`)
+    - Utilities/Functions: `camelCase` (e.g., `colorUtils.ts`)
+- **Code Symbols**:
+    - Classes/Interfaces/Types: `PascalCase`
+    - Variables/Functions/Methods: `camelCase`
+    - Constants: `UPPER_SNAKE_CASE` (e.g., `CONNECT_RADIUS`)
+    - Boolean variables: Prefix with `is`, `has`, `should` (e.g., `isVisible`).
 
 ### TypeScript
-- **Strict Mode**: Enabled. No implicit `any`.
-- **Interfaces**: Use `interface` for Props and public API definitions.
-- **Nullability**: Handle `null` and `undefined` explicitly. Use optional chaining (`?.`) and nullish coalescing (`??`).
-- **Non-null Assertion**: Avoid `!` in production code; acceptable in tests if existence is guaranteed by setup.
+- **Strict Mode**: ON. No implicit `any`.
+- **Explicit Types**: Define return types for public methods/exported functions.
+- **Interfaces vs Types**: Prefer `interface` for object definitions and Props.
+- **Nullability**: Handle `null/undefined` explicitly. Use optional chaining `?.`.
+- **Non-null Assertions**: Avoid `!`. Only use in tests if absolutely necessary.
 
-## 3. Architecture & Patterns
+## 4. Architecture & Design Patterns
 
-### Simulation vs UI Separation
-This project strictly separates the "Simulation Engine" from the "UI/View".
-- **Simulation Layer** (`src/simulation/`):
-  - Class-based (`SimulationEngine`, `BitchatPerson`).
-  - Manages state, physics, networking logic, and game loop.
-  - **Independent of React**. Does not import React or Three.js (except for types if needed).
-  - Uses `EventBus` (`src/events/`) to notify the UI of changes.
-  - `SimulationEngine` runs its own `requestAnimationFrame` loop.
+### Simulation vs. UI Separation
+This is the most critical architectural rule:
+1.  **Simulation is Independent**: The `src/simulation` code **must not** import React, Three.js, or UI code. It runs on its own clock.
+2.  **UI is Reactive**: The UI observes the simulation. It does not drive logic directly, but calls methods on `SimulationEngine`.
 
-- **UI Layer** (`src/ui/`):
-  - React + React Three Fiber (R3F).
-  - Consumes simulation state via Context (`SimulationContext`).
-  - **Synchronization**:
-    - **React State**: Used for UI overlays (HUD).
-    - **R3F `useFrame`**: Used to sync 3D object positions with simulation objects every frame (e.g., `PersonNode.tsx`).
-    - **Events**: Subscribes to `EventBus` for one-off events (e.g., connection formed/broken).
+### State Management
+- **Simulation State**: Mutable, managed by `SimulationEngine` and its children. Updated in the game loop.
+- **UI State**:
+    - **React State**: Use for low-frequency updates (selection, open panels).
+    - **Refs + useFrame**: Use for high-frequency updates (60FPS object movement). **DO NOT** store positions in React state.
+- **Bridge**: `EventBus` emits events (`person_added`, `packet_transmitted`) that the UI subscribes to.
 
-### Protocol (`src/protocol/`)
-- Handles binary encoding/decoding (`BinaryProtocol.ts`).
-- Uses `DataView` for low-level byte manipulation.
-- **Testing**: Heavy reliance on unit tests in `__tests__` directories. Always add tests when modifying protocol logic.
+### EventBus Usage
+- Used for decoupling.
+- Simulation emits events; UI subscribes in `useEffect`.
+- Always clean up listeners in the `return` function of `useEffect`.
 
-## 4. Testing Guidelines
+```typescript
+useEffect(() => {
+    const onTick = (data: any) => { /* update */ };
+    engine.events.on('tick', onTick);
+    return () => engine.events.off('tick', onTick);
+}, [engine]);
+```
+
+### Protocol Layer
+- All data transmission simulation uses `src/protocol`.
+- Binary operations use `DataView`.
+- **CRITICAL**: Any change to `BinaryProtocol.ts` or packet structures **requires** running and potentially updating unit tests in `src/protocol/__tests__`.
+
+## 5. Testing Strategy
+
+- **Unit Tests**: Required for `src/protocol`, `src/simulation`, and `src/utils`.
 - **Framework**: Vitest.
-- **Location**: `__tests__` folders co-located with source modules (e.g., `src/protocol/__tests__/`).
-- **Style**: `describe`, `it`, `expect` pattern.
-- **Requirement**: When modifying logic (especially Protocol or Simulation), run existing tests to ensure no regressions. Write new tests for new logic.
+- **Pattern**: `describe` -> `it` -> `expect`.
+- **Mocking**: Use Vitest mocks for dependencies if isolating a complex class.
+- **Coverage**: Aim for high coverage on Protocol logic (encoding/decoding must be exact).
 
-## 5. Common Pitfalls
-- **Don't** put simulation logic inside React components. Components should only *render* the simulation state.
-- **Don't** use React state (`useState`) for high-frequency updates (like 60fps position changes). Use `useFrame` and direct ref manipulation.
-- **Do** check `package.json` for available libraries before adding new ones.
+## 6. Error Handling
 
-## 6. Git & Commits
-- Commit messages should be concise and descriptive (e.g., "fix: handle disconnect event correctly").
-- Create small, focused commits.
+- **Simulation**: Use `try/catch` blocks around critical loops (e.g., connection handling) to prevent one failure from crashing the entire engine.
+- **Logging**: Use `LogManager` (available in `SimulationEngine`) instead of `console.log` for simulation events.
+    - `logManager.log('ERROR', 'COMPONENT', 'Message', objectId)`
+- **UI**: Fail gracefully. If a simulation object is missing, render nothing or a placeholder, don't crash the app.
+
+## 7. Git & Workflow
+
+- **Commits**: Small, atomic changes.
+- **Messages**: Conventional Commits format.
+    - `feat: add new packet type`
+    - `fix: resolve collision bug`
+    - `refactor: move pathfinding logic`
+    - `docs: update agents.md`
+- **Verification**: Run `npm run typecheck` and `npm run test` before declaring a task complete.

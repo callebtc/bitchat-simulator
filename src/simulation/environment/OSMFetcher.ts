@@ -6,7 +6,13 @@
 
 import { GeoJSONFeatureCollection, GeoJSONFeature, GeoJSONPolygon } from './types';
 
-const OVERPASS_API_URL = 'https://overpass-api.de/api/interpreter';
+const OVERPASS_MIRRORS = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+    'https://lz4.overpass-api.de/api/interpreter'
+];
+
 const CACHE_PREFIX = 'bitchat_osm_cache_';
 const CACHE_VERSION = 1;
 
@@ -21,6 +27,8 @@ interface FetchOptions {
     useCache?: boolean;
     /** Cache timeout in milliseconds (default: 24 hours) */
     cacheTimeout?: number;
+    /** Progress callback (progress: 0-1, status: string) */
+    onProgress?: (progress: number, status: string) => void;
 }
 
 /**
@@ -131,6 +139,7 @@ export async function fetchBuildingsFromOSM(
     const {
         useCache = true,
         cacheTimeout = 24 * 60 * 60 * 1000, // 24 hours
+        onProgress,
     } = options;
 
     const cacheKey = getCacheKey(minLat, minLon, maxLat, maxLon);
@@ -156,22 +165,50 @@ export async function fetchBuildingsFromOSM(
 
     // Fetch from API
     console.log('[OSMFetcher] Fetching from Overpass API...');
+    onProgress?.(0.1, 'Connecting to OSM...');
+
     const query = buildOverpassQuery(minLat, minLon, maxLat, maxLon);
+    let lastError: Error | null = null;
+    let fetchedData: any = null;
 
-    const response = await fetch(OVERPASS_API_URL, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: `data=${encodeURIComponent(query)}`,
-    });
+    for (const mirror of OVERPASS_MIRRORS) {
+        try {
+            console.log(`[OSMFetcher] Trying mirror: ${mirror}`);
+            const urlObj = new URL(mirror);
+            onProgress?.(0.2, `Downloading from ${urlObj.hostname}...`);
 
-    if (!response.ok) {
-        throw new Error(`Overpass API error: ${response.status} ${response.statusText}`);
+            const response = await fetch(mirror, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                },
+                body: `data=${encodeURIComponent(query)}`,
+            });
+
+            if (response.status === 429 || response.status === 502) {
+                console.warn(`[OSMFetcher] Mirror ${mirror} returned ${response.status}, trying next...`);
+                continue;
+            }
+
+            if (!response.ok) {
+                throw new Error(`Overpass API error: ${response.status} ${response.statusText}`);
+            }
+
+            onProgress?.(0.5, 'Parsing map data...');
+            fetchedData = await response.json();
+            break;
+        } catch (e) {
+            console.warn(`[OSMFetcher] Failed to fetch from ${mirror}:`, e);
+            lastError = e instanceof Error ? e : new Error(String(e));
+        }
     }
 
-    const data = await response.json();
-    const geojson = parseOverpassResponse(data);
+    if (!fetchedData) {
+        throw lastError || new Error('All OSM mirrors failed');
+    }
+
+    onProgress?.(0.8, 'Processing features...');
+    const geojson = parseOverpassResponse(fetchedData);
 
     console.log(`[OSMFetcher] Fetched ${geojson.features.length} buildings`);
 
@@ -189,6 +226,7 @@ export async function fetchBuildingsFromOSM(
         }
     }
 
+    onProgress?.(1.0, 'Done');
     return geojson;
 }
 

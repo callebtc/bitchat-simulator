@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useSimulation } from '../context/SimulationContext';
 import { usePersistedState } from '../../utils/usePersistedState';
-import { fetchBuildingsAround, clearAllMapCache } from '../../simulation/environment';
+import { fetchBuildingsAround, clearAllMapCache, PathFinder } from '../../simulation/environment';
 
 // Preset locations for easy selection
 const PRESET_LOCATIONS = [
@@ -82,7 +82,12 @@ export const EnvironmentSection: React.FC = () => {
             
             console.log(`[Environment] Loading area: ${lat}, ${lon}, radius: ${radius}m`);
             
-            const geojson = await fetchBuildingsAround(lat, lon, radius);
+            const geojson = await fetchBuildingsAround(lat, lon, radius, {
+                onProgress: (progress, status) => {
+                    setGraphProgress(progress);
+                    setLoadingStatus(status);
+                }
+            });
             engine.environment.loadFromGeoJSON(geojson, lat, lon);
             
             // Prepare pathfinding graph - this tries cache first
@@ -130,6 +135,11 @@ export const EnvironmentSection: React.FC = () => {
 
     const handleClearCache = () => {
         clearAllMapCache();
+        setError(null);
+    };
+
+    const handleClearNavCache = () => {
+        PathFinder.clearCache();
         setError(null);
     };
 
@@ -299,12 +309,21 @@ export const EnvironmentSection: React.FC = () => {
                     </div>
 
                     {/* Cache Clear */}
-                    <button
-                        onClick={handleClearCache}
-                        className="w-full text-[9px] text-gray-600 hover:text-gray-400 transition-colors py-0.5"
-                    >
-                        Clear all cached map data
-                    </button>
+                    <div className="w-full text-[9px] text-gray-600 text-center py-0.5">
+                        <button 
+                            onClick={handleClearCache}
+                            className="hover:text-gray-400 transition-colors"
+                        >
+                            Clear all cached map data
+                        </button>
+                        <span> or </span>
+                        <button 
+                            onClick={handleClearNavCache}
+                            className="hover:text-gray-400 transition-colors underline"
+                        >
+                            only navigation data
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
