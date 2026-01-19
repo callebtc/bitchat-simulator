@@ -52,7 +52,8 @@ export class SimulationEngine {
     rebuildPathfindingGraph(): void {
         const buildings = this.environment.getBuildings();
         this.pathFinder.buildVisibilityGraph(buildings, PATHFINDING_PADDING);
-        this.logManager.log('INFO', 'GLOBAL', `Pathfinding graph rebuilt with ${this.pathFinder.getNodeCount()} nodes`);
+        // Note: Graph is built lazily on first findPath() call
+        this.logManager.log('INFO', 'GLOBAL', `Pathfinding ready for ${buildings.length} buildings`);
     }
 
     removePerson(id: string) {

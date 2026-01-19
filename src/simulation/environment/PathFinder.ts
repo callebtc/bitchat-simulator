@@ -483,9 +483,9 @@ export class PathFinder {
 
     /**
      * Get the number of nodes in the visibility graph.
+     * Returns 0 if graph hasn't been built yet (lazy init).
      */
     getNodeCount(): number {
-        this.ensureGraphBuilt();
         return this.nodes.length;
     }
 

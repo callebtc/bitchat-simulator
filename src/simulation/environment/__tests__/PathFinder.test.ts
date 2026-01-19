@@ -56,6 +56,8 @@ describe('PathFinder', () => {
         });
 
         it('creates visibility graph nodes', () => {
+            // Trigger lazy graph building by calling findPath
+            pathFinder.findPath({ x: 0, y: 0 }, { x: 100, y: 100 });
             // Should have 4 padded corners
             expect(pathFinder.getNodeCount()).toBe(4);
         });
@@ -125,6 +127,8 @@ describe('PathFinder', () => {
         });
 
         it('creates nodes for all building corners', () => {
+            // Trigger lazy graph building by calling findPath
+            pathFinder.findPath({ x: 0, y: 0 }, { x: 100, y: 100 });
             // 4 corners * 2 buildings
             expect(pathFinder.getNodeCount()).toBe(8);
         });
