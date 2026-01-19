@@ -37,6 +37,8 @@ export class BitchatDevice {
     // Power & Scanning
     powerMode: PowerMode = PowerMode.PERFORMANCE;
     lastScanTime: number = -1;
+    // The delay until the next scan, randomized each cycle to prevent synchronization
+    currentScanDelay: number = -1;
     isScanning: boolean = false;
     alwaysScan: boolean = false; // For testing
     
@@ -90,17 +92,23 @@ export class BitchatDevice {
         
         // Scanning Logic
         this.isScanning = this.alwaysScan;
-        const interval = SCAN_INTERVALS[this.powerMode];
+        const baseInterval = SCAN_INTERVALS[this.powerMode];
         
         if (this.lastScanTime === -1) {
-            // Jitter the first scan
-            this.lastScanTime = now - Math.random() * interval;
+            // First tick initialization
+            this.lastScanTime = now;
+            // Initial random offset to desynchronize start times
+            this.currentScanDelay = Math.random() * baseInterval;
         }
 
-        if (now - this.lastScanTime > interval) {
+        if (now - this.lastScanTime > this.currentScanDelay) {
             this.isScanning = true;
             this.lastScanTime = now;
-            // this.logger?.log('DEBUG', 'DEVICE', 'Scanning...', this.peerIDHex);
+            
+            // Calculate next delay: Base Interval ± 20% Jitter
+            // This prevents "thundering herd" re-synchronization after CPU lags
+            const jitter = (Math.random() - 0.5) * 0.4; // -0.2 to +0.2
+            this.currentScanDelay = baseInterval * (1 + jitter);
         }
     }
 

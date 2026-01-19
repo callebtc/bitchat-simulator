@@ -23,6 +23,7 @@ export class BitchatAppSimulator {
     messages: ChatMessage[] = [];
     
     private lastAnnounceTime: number = -1;
+    private currentAnnounceDelay: number = ANNOUNCE_INTERVAL;
     private seenPackets: Set<string> = new Set();
     private logger?: LogManager;
     
@@ -43,13 +44,19 @@ export class BitchatAppSimulator {
         if (!this.isAnnouncing) return;
         
         if (this.lastAnnounceTime === -1) {
-            // First tick: jitter the first announcement within the interval
-            this.lastAnnounceTime = now - Math.random() * ANNOUNCE_INTERVAL;
+            // First tick initialization
+            this.lastAnnounceTime = now;
+            // Initial random offset
+            this.currentAnnounceDelay = Math.random() * ANNOUNCE_INTERVAL;
         }
         
-        if (now - this.lastAnnounceTime > ANNOUNCE_INTERVAL) {
+        if (now - this.lastAnnounceTime > this.currentAnnounceDelay) {
             this.sendAnnounce();
             this.lastAnnounceTime = now;
+            
+            // Calculate next delay: Base Interval ± 20% Jitter
+            const jitter = (Math.random() - 0.5) * 0.4;
+            this.currentAnnounceDelay = ANNOUNCE_INTERVAL * (1 + jitter);
         }
     }
 
