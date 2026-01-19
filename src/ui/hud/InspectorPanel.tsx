@@ -62,6 +62,23 @@ export const InspectorPanel: React.FC = () => {
                             Click on map to set target
                         </div>
                     )}
+                    
+                    {/* App Controls */}
+                    {sim && (
+                        <div className="flex justify-between items-center mt-2 pt-2 border-t border-gray-800">
+                            <span className="opacity-60">Announcing:</span>
+                            <button 
+                                className={`text-xs px-2 py-0.5 rounded border ${sim.isAnnouncing ? 'border-green-500 text-green-400' : 'border-red-500 text-red-400'}`}
+                                onClick={() => {
+                                    sim.isAnnouncing = !sim.isAnnouncing;
+                                    // forceUpdate logic is usually implicit via ref checks in 3D, but here we might need state.
+                                    // But since we have the interval update, it will reflect in UI.
+                                }}
+                            >
+                                {sim.isAnnouncing ? 'ON' : 'OFF'}
+                            </button>
+                        </div>
+                    )}
                 </div>
 
                 <div className="mb-4 border-t border-gray-700 pt-2">

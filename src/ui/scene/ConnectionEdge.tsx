@@ -15,6 +15,7 @@ interface FlyingPacket {
     progress: number; // 0 to 1
     direction: 1 | -1; // 1: A->B, -1: B->A
     color: string;
+    isRelay: boolean;
 }
 
 export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) => {
@@ -35,29 +36,47 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             const direction = data.fromId === connection.endpointA.peerIDHex ? 1 : -1;
             const p = data.packet;
             
+            // Check if this is an Origin transmission or a Relay
+            const senderHex = Array.from(p.senderID as Uint8Array).map(b => b.toString(16).padStart(2, '0')).join('');
+            const isRelay = data.fromId !== senderHex;
+            
             // Color Logic based on Type and TTL
             // TTL 7 -> 1
             
-            let colorObj = new THREE.Color(0xffffff);
-            if (p.type === MessageType.ANNOUNCE) colorObj.setHex(0x00ffff);
-            if (p.type === MessageType.MESSAGE) colorObj.setHex(0x00ff00);
+            let colorObj = new THREE.Color();
+            let baseColor = 0xffffff;
+            if (p.type === MessageType.ANNOUNCE) baseColor = 0x00ffff;
+            if (p.type === MessageType.MESSAGE) baseColor = 0x00ff00;
             
-            // Dim it based on TTL?
-            // HSL approach might be better. 
-            // Or just lerp to black?
-            colorObj.lerp(new THREE.Color(0x000000), 1 - (p.ttl / 8)); 
+            colorObj.setHex(baseColor);
+            
+            // Dim it based on TTL using HSL
+            const hsl = { h: 0, s: 0, l: 0 };
+            colorObj.getHSL(hsl);
+            
+            if (isRelay) {
+                // Relay: Darker, desaturated
+                hsl.s *= 0.5; // Desaturate
+                hsl.l = 0.3;  // Fixed dimness
+            } else {
+                // Origin: Bright
+                hsl.l = 0.6;
+            }
+            
+            colorObj.setHSL(hsl.h, hsl.s, hsl.l);
             
             const color = '#' + colorObj.getHexString();
             
             setPackets(prev => [
                 ...prev, 
-                { id: Math.random().toString(), progress: 0, direction, color }
+                { id: Math.random().toString(), progress: 0, direction, color, isRelay }
             ]);
         };
         
         engine.events.on('packet_transmitted', handlePacket);
         return () => { engine.events.off('packet_transmitted', handlePacket); };
     }, [connection, engine]);
+
 
     // Initial positions buffer
     const positions = useMemo(() => new Float32Array(6), []);
@@ -144,7 +163,7 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                 
                 return (
                     <mesh key={p.id} position={[x, y, 0]}>
-                        <sphereGeometry args={[2, 8, 8]} />
+                        <sphereGeometry args={[p.isRelay ? 1.5 : 2.5, 8, 8]} />
                         <meshBasicMaterial color={p.color} />
                     </mesh>
                 );

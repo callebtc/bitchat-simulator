@@ -13,6 +13,9 @@ export class BitchatAppSimulator {
     private lastAnnounceTime: number = 0;
     private seenPackets: Set<string> = new Set();
     private logger?: LogManager;
+    
+    // Config
+    isAnnouncing: boolean = true;
 
     constructor(device: BitchatDevice) {
         this.device = device;
@@ -25,6 +28,8 @@ export class BitchatAppSimulator {
     }
 
     tick(now: number) {
+        if (!this.isAnnouncing) return;
+        
         if (now - this.lastAnnounceTime > ANNOUNCE_INTERVAL) {
             this.sendAnnounce();
             this.lastAnnounceTime = now;
