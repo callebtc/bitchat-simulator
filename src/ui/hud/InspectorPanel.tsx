@@ -41,6 +41,41 @@ const CollapsibleSection: React.FC<{
     );
 };
 
+// Reusable List Item for Peers and Connections
+const ListItem: React.FC<{
+    title: string;
+    subtitle?: string;
+    rightElement?: React.ReactNode;
+    color?: string;
+    onClick?: () => void;
+    onMouseEnter?: () => void;
+    onMouseLeave?: () => void;
+    highlighted?: boolean;
+}> = ({ title, subtitle, rightElement, color, onClick, onMouseEnter, onMouseLeave, highlighted }) => (
+    <div 
+        className={`group flex justify-between items-center text-xs p-1.5 rounded border border-transparent cursor-pointer transition-all ${
+            highlighted 
+            ? 'bg-gray-800 border-gray-700' 
+            : 'hover:bg-gray-800/50 hover:border-gray-700'
+        }`}
+        onClick={onClick}
+        onMouseEnter={onMouseEnter}
+        onMouseLeave={onMouseLeave}
+    >
+        <div className="flex flex-col min-w-0 flex-1 mr-2">
+            <div className="flex items-center gap-2">
+                <span className="font-bold truncate" style={{ color: color || 'white' }}>{title}</span>
+                {subtitle && <span className="text-[9px] text-gray-500 font-mono truncate">{subtitle}</span>}
+            </div>
+        </div>
+        {rightElement && (
+            <div className="flex-shrink-0">
+                {rightElement}
+            </div>
+        )}
+    </div>
+);
+
 // Reusable Key-Value Row
 const DataRow: React.FC<{ label: string; value: React.ReactNode; valueColor?: string }> = ({ label, value, valueColor = 'text-white' }) => (
     <div className="flex justify-between items-baseline text-xs mb-1 last:mb-0">
@@ -268,26 +303,27 @@ export const InspectorPanel: React.FC = () => {
                  <CollapsibleSection title={`PEER LIST (${knownPeers.length})`} accentColor="text-orange-600" persistenceKey="inspector_peer_list">
                      <div className="space-y-1">
                         {knownPeers.map(p => (
-                            <div 
-                                key={p.id} 
-                                className="group flex justify-between items-center text-xs p-1.5 rounded border border-transparent hover:bg-gray-800/50 hover:border-gray-700 cursor-pointer transition-all"
+                            <ListItem
+                                key={p.id}
+                                title={p.nickname}
+                                color={getPeerColor(p.id)}
                                 onClick={() => setChatRecipientId(p.id)}
                                 onMouseEnter={() => setHighlightedId(p.id)}
                                 onMouseLeave={() => setHighlightedId(null)}
-                            >
-                                <div className="flex flex-col">
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-bold" style={{ color: getPeerColor(p.id) }}>{p.nickname}</span>
-                                        <span className={`text-[9px] px-1 rounded ${p.isDirect ? 'bg-green-900/30 text-green-500' : 'bg-orange-900/30 text-orange-500'}`}>
+                                rightElement={
+                                    <div className="flex items-center gap-1.5">
+                                        <span className={`text-[8px] px-1 rounded-sm ${p.isDirect ? 'bg-green-900/30 text-green-500' : 'bg-orange-900/30 text-orange-500'}`}>
                                             {p.isDirect ? 'DIR' : 'RTE'}
                                         </span>
+                                        <span className="text-[9px] font-mono text-gray-500">
+                                            {p.id.substring(0, 8)}
+                                        </span>
+                                        <span className="text-[9px] text-gray-600">
+                                            {((Date.now() - p.lastSeen)/1000).toFixed(0)}s
+                                        </span>
                                     </div>
-                                    <span className="text-[9px] text-gray-600 font-mono">{p.id.substring(0,8)}...</span>
-                                </div>
-                                <div className="text-[10px] text-gray-500 group-hover:text-white transition-colors">
-                                    {((Date.now() - p.lastSeen)/1000).toFixed(0)}s
-                                </div>
-                            </div>
+                                }
+                            />
                         ))}
                         {knownPeers.length === 0 && <div className="text-[10px] text-gray-600 italic text-center py-2">Network is empty</div>}
                     </div>
@@ -306,22 +342,23 @@ export const InspectorPanel: React.FC = () => {
                             const rssiColor = rssi !== null ? getRssiColor(rssi) : 'text-gray-500';
                             
                             return (
-                                <div 
-                                    key={p.peerIDHex} 
-                                    className="flex justify-between items-center text-xs bg-gray-900/30 p-1.5 rounded border border-gray-800/50 hover:bg-gray-800/50 transition-colors"
+                                <ListItem
+                                    key={p.peerIDHex}
+                                    title={p.nickname}
+                                    color={getPeerColor(p.peerIDHex)}
                                     onMouseEnter={() => setHighlightedId(p.peerIDHex)}
                                     onMouseLeave={() => setHighlightedId(null)}
-                                >
-                                    <span className="font-bold" style={{ color: getPeerColor(p.peerIDHex) }}>{p.nickname}</span>
-                                    <div className="flex items-center gap-2">
-                                        {rssi !== null && (
-                                            <span className={`font-mono text-[10px] ${rssiColor}`}>
-                                                {rssi.toFixed(0)}dBm
-                                            </span>
-                                        )}
-                                        <span className="font-mono text-gray-600 text-[10px]">{p.peerIDHex.substring(0,6)}</span>
-                                    </div>
-                                </div>
+                                    rightElement={
+                                        <div className="flex items-center gap-2">
+                                            {rssi !== null && (
+                                                <span className={`font-mono text-[10px] ${rssiColor}`}>
+                                                    {rssi.toFixed(0)}dBm
+                                                </span>
+                                            )}
+                                            <span className="font-mono text-gray-600 text-[9px]">{p.peerIDHex.substring(0,6)}</span>
+                                        </div>
+                                    }
+                                />
                             );
                         })}
                         {conns.length === 0 && <div className="text-[10px] text-gray-600 italic text-center py-2">No active physical links</div>}
