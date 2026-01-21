@@ -37,24 +37,24 @@ export const PersonNode: React.FC<PersonNodeProps> = ({ id }) => {
     // Listen for packet events to trigger knock
     useEffect(() => {
         const onPacket = (data: any) => {
-            if (data.fromId === peerIdHex) {
-                // Check if origin
-                const packet = data.packet;
+            // Targeted event: data.fromId is guaranteed to be peerIdHex
+            const packet = data.packet;
 
-                // Filter Announce Packets if visualization disabled
-                if (!showAnnouncePackets && packet.type === MessageType.ANNOUNCE) return;
+            // Filter Announce Packets if visualization disabled
+            if (!showAnnouncePackets && packet.type === MessageType.ANNOUNCE) return;
 
-                const senderHex = Array.from(packet.senderID as Uint8Array)
-                    .map(b => b.toString(16).padStart(2, '0'))
-                    .join('');
-                
-                if (senderHex === peerIdHex) {
-                    knockScale.current = 1.5; // Instant pop
-                }
+            const senderHex = Array.from(packet.senderID as Uint8Array)
+                .map(b => (b as number).toString(16).padStart(2, '0'))
+                .join('');
+            
+            if (senderHex === peerIdHex) {
+                knockScale.current = 1.5; // Instant pop
             }
         };
-        engine.events.on('packet_transmitted', onPacket);
-        return () => { engine.events.off('packet_transmitted', onPacket); };
+        
+        const eventName = `packet_transmitted:${peerIdHex}`;
+        engine.events.on(eventName, onPacket);
+        return () => { engine.events.off(eventName, onPacket); };
     }, [engine, peerIdHex, showAnnouncePackets]);
     
     useFrame((_, delta) => {

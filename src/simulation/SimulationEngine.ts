@@ -361,11 +361,14 @@ export class SimulationEngine {
         // Wait, if we want to debug, maybe we should log.
         
         conn.onPacketSent = (packet, from) => {
-            this.events.emit('packet_transmitted', {
+            const eventData = {
                 connectionId: conn.id,
                 packet: packet,
                 fromId: from.peerIDHex
-            });
+            };
+            this.events.emit('packet_transmitted', eventData);
+            // Targeted event for animation performance
+            this.events.emit(`packet_transmitted:${from.peerIDHex}`, eventData);
         };
         
         this.pendingConnections.set(key, {
