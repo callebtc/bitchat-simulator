@@ -223,7 +223,7 @@ export const MainControlPanel: React.FC = () => {
     
     const handleAddNode = () => {
         addRandomNode(engine, { 
-            center: viewCenter,
+            center: viewCenter.current,
             initialMode: spawnBusy ? MovementMode.BUSY : undefined
         });
     };
@@ -280,7 +280,7 @@ export const MainControlPanel: React.FC = () => {
             const countToAdd = chargeCountRef.current;
             for (let i = 0; i < countToAdd; i++) {
                 addRandomNode(engine, { 
-                    center: viewCenter,
+                    center: viewCenter.current,
                     initialMode: spawnBusy ? MovementMode.BUSY : undefined
                 });
             }
