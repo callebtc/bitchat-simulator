@@ -15,10 +15,10 @@ import * as THREE from 'three';
 
 const ViewTracker: React.FC = () => {
     const { camera } = useThree();
-    const { setViewCenter } = useSelection();
+    const { viewCenter } = useSelection();
     
     useFrame(() => {
-        setViewCenter({ x: camera.position.x, y: camera.position.y });
+        viewCenter.current = { x: camera.position.x, y: camera.position.y };
     });
     
     return null;
