@@ -152,6 +152,8 @@ describe('Phase 2: Android-Faithful Mesh Core & iOS Policy Preset', () => {
         const simB = new BitchatAppSimulator(dB, 'android');
         simA.isAnnouncing = false;
         simB.isAnnouncing = false;
+        simA.isSyncEnabled = false;
+        simB.isSyncEnabled = false;
         dA.setAppSimulator(simA);
         dB.setAppSimulator(simB);
 

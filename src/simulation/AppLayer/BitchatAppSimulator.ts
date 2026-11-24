@@ -5,6 +5,9 @@ import { PeerManager } from './PeerManager';
 import { MeshGraph } from './MeshGraph';
 import { SecurityManager } from './SecurityManager';
 import { FRAGMENT_CONFIG, FragmentManager } from './FragmentManager';
+import { GossipSyncManager } from './GossipSyncManager';
+import { NoisePayloadType, NoiseSessionManager } from './NoiseSessionManager';
+import { MessageRouter } from './MessageRouter';
 import {
     MeshPolicy,
     MeshPolicyPreset,
@@ -42,19 +45,27 @@ export class BitchatAppSimulator implements DeviceTickable {
     meshGraph: MeshGraph;
     securityManager: SecurityManager;
     fragmentManager: FragmentManager;
+    gossipSync: GossipSyncManager;
+    noiseManager: NoiseSessionManager;
+    messageRouter: MessageRouter;
     policy: MeshPolicy;
     messages: ChatMessage[] = [];
+    /** IDs of outgoing private DMs confirmed by a Noise DELIVERED ACK. */
+    deliveredMessageIds: Set<string> = new Set();
 
     private lastAnnounceTime: number = -1;
     private currentAnnounceDelay: number = 0;
     private lastPeerCleanupTime: number = 0;
     private lastFragmentCleanupTime: number = 0;
+    private lastPeriodicSyncTime: number = 0;
     private logger?: LogManager;
     private runtime?: DeviceRuntime;
     private currentNowMs: number = 0;
 
     /** Direct link binding: connection.linkID -> observed direct peerIDHex (bound on ttl === maxTtl ANNOUNCE). */
     private linkPeerBindings: Map<string, string> = new Map();
+    /** Peers for which initial 1 s post-connect gossip sync has already been scheduled. */
+    private initialSyncScheduledPeers: Set<string> = new Set();
 
     /** Pending jittered relays keyed by packetId so duplicates can cancel them (iOS policy). */
     private scheduledRelays: Map<string, ScheduledEventHandle> = new Map();
@@ -66,6 +77,7 @@ export class BitchatAppSimulator implements DeviceTickable {
 
     // Config
     isAnnouncing: boolean = true;
+    isSyncEnabled: boolean = true;
 
     constructor(
         device: BitchatDevice,
@@ -80,6 +92,9 @@ export class BitchatAppSimulator implements DeviceTickable {
         this.meshGraph = new MeshGraph();
         this.securityManager = new SecurityManager(device.peerIDHex);
         this.fragmentManager = new FragmentManager();
+        this.gossipSync = new GossipSyncManager();
+        this.noiseManager = new NoiseSessionManager(device.peerIDHex);
+        this.messageRouter = new MessageRouter();
 
         // Dynamic direct-link lookup matching Android BluetoothMeshService.kt:181
         this.peerManager.isPeerDirectlyConnected = (peerID: string) =>
@@ -88,6 +103,10 @@ export class BitchatAppSimulator implements DeviceTickable {
         // Cascade cleanup when a peer leaves or expires
         this.peerManager.onPeerRemoved = (peerID: string) => {
             this.meshGraph.removePeer(peerID);
+            this.gossipSync.removeAnnouncementForPeer(peerID);
+            this.noiseManager.removeSession(peerID);
+            this.messageRouter.clearPeerRetryState(peerID);
+            this.initialSyncScheduledPeers.delete(peerID);
             this.clearRouteConfirmation(peerID);
         };
 
@@ -215,10 +234,34 @@ export class BitchatAppSimulator implements DeviceTickable {
             }
         }
 
-        // 2. Periodic ANNOUNCE scheduler
+        // 2. Periodic MessageRouter outbox expiration & handshake retries (every 2 s)
+        const routerTick = this.messageRouter.tick(now);
+        for (let i = 0; i < routerTick.expiredCount; i++) {
+            this.runtime?.telemetry.recordDrop('outbox_expired');
+        }
+        for (const peerHex of routerTick.peersToRetryHandshake) {
+            if (
+                !this.noiseManager.hasEstablishedSession(peerHex) &&
+                this.peerManager.getPeer(peerHex)
+            ) {
+                this.initiateNoiseHandshake(peerHex, now, true);
+            }
+        }
+
+        // 3. Periodic Gossip Sync (REQUEST_SYNC, ttl=0, every 30 s when connected)
+        const hasDirectLinks = this.device.connectionManager.getActiveConnections().length > 0;
+        if (
+            this.isSyncEnabled &&
+            hasDirectLinks &&
+            now - this.lastPeriodicSyncTime >= this.gossipSync.config.periodicSyncIntervalMs
+        ) {
+            this.lastPeriodicSyncTime = now;
+            this.sendSyncRequest(undefined, now);
+        }
+
+        // 4. Periodic ANNOUNCE scheduler
         if (!this.isAnnouncing) return;
 
-        const hasDirectLinks = this.device.connectionManager.getActiveConnections().length > 0;
         if (this.policy.announceOnlyWhenConnected && !hasDirectLinks) {
             return;
         }
@@ -295,6 +338,7 @@ export class BitchatAppSimulator implements DeviceTickable {
         );
 
         const packetId = this.securityManager.markSeen(packet, nowMs, this.policy);
+        this.gossipSync.onPublicPacketSeen(packet, nowMs);
         const pop = Math.max(0, (this.runtime?.getPopulationCount?.() ?? 1) - 1);
         this.runtime?.telemetry.recordMessageOriginated(
             packetId,
@@ -315,26 +359,158 @@ export class BitchatAppSimulator implements DeviceTickable {
     }
 
     sendMessage(text: string, recipientIdHex?: string): string {
+        if (recipientIdHex) {
+            return this.sendPrivateMessage(text, recipientIdHex);
+        }
         const nowMs = this.now();
         const payload = new TextEncoder().encode(text);
         const packet = this.buildAndOriginatePacket(
             MessageType.MESSAGE,
             payload,
-            recipientIdHex,
+            undefined,
             nowMs,
-            recipientIdHex ? 'dm' : 'broadcast'
+            'broadcast'
         );
+
+        this.gossipSync.onPublicPacketSeen(packet, nowMs);
 
         const packetId = computePacketIdHex(packet);
         this.messages.push({
             id: packetId,
             timestamp: nowMs,
             senderId: this.device.peerIDHex,
-            recipientId: recipientIdHex,
+            recipientId: undefined,
             text,
             isOutgoing: true,
         });
         return packetId;
+    }
+
+    /**
+     * Send an end-to-end encrypted private DM over Noise XX (`NOISE_HANDSHAKE` + `NOISE_ENCRYPTED`).
+     * Queues in `MessageRouter` outbox while the 3-step handshake completes, then flushes automatically.
+     */
+    sendPrivateMessage(text: string, recipientIdHex: string): string {
+        const nowMs = this.now();
+        const body = new TextEncoder().encode(text);
+        const messageId = `dm-${this.device.peerIDHex.substring(0, 6)}-${Math.floor(nowMs)}-${this.device.rng.nextInt(0, 0xfffff)}`;
+
+        this.messages.push({
+            id: messageId,
+            timestamp: nowMs,
+            senderId: this.device.peerIDHex,
+            recipientId: recipientIdHex,
+            text,
+            isOutgoing: true,
+        });
+
+        this.runtime?.telemetry.recordMessageOriginated(
+            messageId,
+            'dm',
+            this.device.peerIDHex,
+            nowMs,
+            body.length,
+            1,
+            recipientIdHex
+        );
+
+        if (this.noiseManager.hasEstablishedSession(recipientIdHex)) {
+            this.sendNoiseEncrypted(
+                recipientIdHex,
+                NoisePayloadType.PRIVATE_MESSAGE,
+                messageId,
+                body,
+                nowMs
+            );
+        } else {
+            this.messageRouter.enqueue({
+                messageId,
+                recipientHex: recipientIdHex,
+                payloadType: NoisePayloadType.PRIVATE_MESSAGE,
+                body,
+                enqueuedAtMs: nowMs,
+            });
+            if (this.messageRouter.canAttemptHandshake(recipientIdHex, nowMs)) {
+                this.initiateNoiseHandshake(recipientIdHex, nowMs, false);
+            }
+        }
+
+        return messageId;
+    }
+
+    /**
+     * Send a link-local `REQUEST_SYNC (0x21, ttl=0)` containing this node's GCS filter.
+     * If `targetPeerHex` is provided, unicasts to that direct peer; otherwise broadcasts link-locally.
+     */
+    sendSyncRequest(targetPeerHex?: string, nowMs: number = this.now()): void {
+        if (!this.isSyncEnabled) return;
+        const payload = this.gossipSync.buildRequestSyncPayload(nowMs);
+        const packet = createPacket(
+            MessageType.REQUEST_SYNC,
+            this.device.peerID,
+            payload,
+            0, // Strictly link-local (never relayed)
+            targetPeerHex ? hexToBytes(targetPeerHex, 8) : SpecialRecipients.BROADCAST,
+            nowMs
+        );
+        const packetId = this.securityManager.markSeen(packet, nowMs, this.policy);
+        this.runtime?.telemetry.recordMessageOriginated(
+            packetId,
+            'sync',
+            this.device.peerIDHex,
+            nowMs,
+            payload.length,
+            targetPeerHex ? 1 : this.device.connectionManager.getActiveConnections().length,
+            targetPeerHex
+        );
+
+        if (targetPeerHex) {
+            this.sendToDirectPeer(targetPeerHex, packet, nowMs);
+        } else {
+            this.broadcastViaPolicy(packet, undefined, undefined, nowMs);
+        }
+    }
+
+    private initiateNoiseHandshake(
+        recipientIdHex: string,
+        nowMs: number,
+        forceRestart: boolean
+    ): void {
+        const msg1 = this.noiseManager.initiateHandshake(recipientIdHex, nowMs, forceRestart);
+        if (!msg1) return;
+        this.messageRouter.recordHandshakeAttempt(recipientIdHex, nowMs);
+        this.buildAndOriginatePacket(
+            MessageType.NOISE_HANDSHAKE,
+            msg1,
+            recipientIdHex,
+            nowMs,
+            undefined,
+            1,
+            false
+        );
+    }
+
+    private sendNoiseEncrypted(
+        recipientIdHex: string,
+        payloadType: NoisePayloadType,
+        messageId: string,
+        body: Uint8Array,
+        nowMs: number
+    ): void {
+        const encryptedPayload = NoiseSessionManager.encodeEncryptedPayload(
+            payloadType,
+            messageId,
+            body
+        );
+        this.buildAndOriginatePacket(
+            MessageType.NOISE_ENCRYPTED,
+            encryptedPayload,
+            recipientIdHex,
+            nowMs,
+            undefined,
+            1,
+            false
+        );
     }
 
     sendVoiceFrame(payload: Uint8Array, recipientIdHex?: string): string {
@@ -367,8 +543,9 @@ export class BitchatAppSimulator implements DeviceTickable {
         payload: Uint8Array,
         recipientIdHex: string | undefined,
         nowMs: number,
-        telemetryKind: 'broadcast' | 'dm' | 'file' | 'voice',
-        minVersion: number = 1
+        telemetryKind?: 'broadcast' | 'dm' | 'file' | 'voice',
+        minVersion: number = 1,
+        signPacket: boolean = true
     ): BitchatPacket {
         const recipientID = recipientIdHex ? hexToBytes(recipientIdHex, 8) : SpecialRecipients.BROADCAST;
         const packet = createPacket(
@@ -410,21 +587,25 @@ export class BitchatAppSimulator implements DeviceTickable {
             }
         }
 
-        packet.signature = SecurityManager.signPacket(packet, this.device.signingPublicKey);
+        if (signPacket) {
+            packet.signature = SecurityManager.signPacket(packet, this.device.signingPublicKey);
+        }
         const packetId = this.securityManager.markSeen(packet, nowMs, this.policy);
 
-        const expectedRecipients = recipientIdHex
-            ? 1
-            : Math.max(0, (this.runtime?.getPopulationCount?.() ?? 1) - 1);
-        this.runtime?.telemetry.recordMessageOriginated(
-            packetId,
-            telemetryKind,
-            this.device.peerIDHex,
-            nowMs,
-            payload.length,
-            expectedRecipients,
-            recipientIdHex
-        );
+        if (telemetryKind) {
+            const expectedRecipients = recipientIdHex
+                ? 1
+                : Math.max(0, (this.runtime?.getPopulationCount?.() ?? 1) - 1);
+            this.runtime?.telemetry.recordMessageOriginated(
+                packetId,
+                telemetryKind,
+                this.device.peerIDHex,
+                nowMs,
+                payload.length,
+                expectedRecipients,
+                recipientIdHex
+            );
+        }
 
         // Fragment any outbound packet exceeding 512 B MTU (FragmentingPacketSender.kt: 20 ms pacing)
         const frames = this.fragmentManager.createFragments(packet, this.device.rng);
@@ -522,6 +703,21 @@ export class BitchatAppSimulator implements DeviceTickable {
             this.handleAnnounce(packet, from, ingressConnection, nowMs, packetId, hops, transportName);
         } else if (packet.type === MessageType.LEAVE) {
             this.peerManager.removePeer(senderHex);
+        } else if (packet.type === MessageType.REQUEST_SYNC) {
+            this.handleRequestSync(packet, senderHex, ingressConnection, nowMs);
+            return; // Strictly link-local, never relayed
+        } else if (packet.type === MessageType.NOISE_HANDSHAKE) {
+            this.peerManager.updateLastSeen(senderHex, nowMs);
+            if (this.isForMe(packet)) {
+                this.handleNoiseHandshake(packet, senderHex, nowMs);
+                return;
+            }
+        } else if (packet.type === MessageType.NOISE_ENCRYPTED) {
+            this.peerManager.updateLastSeen(senderHex, nowMs);
+            if (this.isForMe(packet)) {
+                this.handleNoiseEncrypted(packet, senderHex, nowMs, hops, transportName);
+                return;
+            }
         } else if (packet.type === MessageType.FRAGMENT) {
             this.peerManager.updateLastSeen(senderHex, nowMs);
             if (this.isForMe(packet)) {
@@ -667,6 +863,9 @@ export class BitchatAppSimulator implements DeviceTickable {
         );
 
         if (packet.type === MessageType.MESSAGE) {
+            if (isBroadcast) {
+                this.gossipSync.onPublicPacketSeen(packet, nowMs);
+            }
             const text = new TextDecoder().decode(packet.payload);
             this.messages.push({
                 id: packetId,
@@ -676,6 +875,155 @@ export class BitchatAppSimulator implements DeviceTickable {
                 text,
                 isOutgoing: false,
             });
+        }
+    }
+
+    private handleRequestSync(
+        packet: BitchatPacket,
+        senderHex: string,
+        ingressConnection: BitchatConnection | undefined,
+        nowMs: number
+    ): void {
+        if (!this.isSyncEnabled || this.gossipSync.isResponding) return;
+        const missing = this.gossipSync.computeMissingPackets(packet.payload, nowMs);
+        if (missing.length === 0) return;
+
+        const sendOne = (pkt: BitchatPacket, fireNow: number): void => {
+            if (ingressConnection && ingressConnection.isActive && ingressConnection.isReady) {
+                ingressConnection.send(pkt, this.device, fireNow);
+            } else {
+                this.sendToDirectPeer(senderHex, pkt, fireNow);
+            }
+        };
+
+        if (!this.runtime?.scheduler || missing.length === 1) {
+            for (const pkt of missing) {
+                sendOne(pkt, nowMs);
+            }
+            return;
+        }
+
+        // Pace missing packets 20 ms apart under responseMutex (Android GossipSyncManager.kt)
+        this.gossipSync.isResponding = true;
+        const paceMs = this.gossipSync.config.responsePaceMs;
+        missing.forEach((pkt, idx) => {
+            const isLast = idx === missing.length - 1;
+            const delayMs = idx * paceMs;
+            if (delayMs === 0) {
+                sendOne(pkt, nowMs);
+                if (isLast) this.gossipSync.isResponding = false;
+            } else {
+                this.runtime!.scheduler.scheduleIn(
+                    delayMs,
+                    fireNow => {
+                        sendOne(pkt, fireNow);
+                        if (isLast) {
+                            this.gossipSync.isResponding = false;
+                        }
+                    },
+                    `sync-resp:${this.device.peerIDHex}:${idx}/${missing.length}`
+                );
+            }
+        });
+    }
+
+    private handleNoiseHandshake(
+        packet: BitchatPacket,
+        senderHex: string,
+        nowMs: number
+    ): void {
+        const result = this.noiseManager.handleHandshakeMessage(senderHex, packet.payload, nowMs);
+        if (result.responsePayload) {
+            this.buildAndOriginatePacket(
+                MessageType.NOISE_HANDSHAKE,
+                result.responsePayload,
+                senderHex,
+                nowMs,
+                undefined,
+                1,
+                false
+            );
+        }
+
+        if (result.becameEstablished) {
+            const flush = (fireNow: number): void => {
+                const queued = this.messageRouter.flushForPeer(senderHex);
+                for (const item of queued) {
+                    this.sendNoiseEncrypted(
+                        senderHex,
+                        item.payloadType,
+                        item.messageId,
+                        item.body,
+                        fireNow
+                    );
+                }
+            };
+
+            // If we just sent msg3 as initiator, pace outbox flush +25ms behind msg3
+            if (result.responsePayload && this.runtime?.scheduler) {
+                this.runtime.scheduler.scheduleIn(
+                    25,
+                    flush,
+                    `noise-flush:${this.device.peerIDHex}:${senderHex}`
+                );
+            } else {
+                flush(nowMs);
+            }
+        }
+    }
+
+    private handleNoiseEncrypted(
+        packet: BitchatPacket,
+        senderHex: string,
+        nowMs: number,
+        hops: number,
+        transportName: string
+    ): void {
+        if (!this.noiseManager.hasEstablishedSession(senderHex)) {
+            return;
+        }
+        const inner = NoiseSessionManager.decodeEncryptedPayload(packet.payload);
+        if (!inner) return;
+
+        if (inner.payloadType === NoisePayloadType.PRIVATE_MESSAGE) {
+            const text = new TextDecoder().decode(inner.body);
+            this.messages.push({
+                id: inner.messageId,
+                timestamp: Number(packet.timestamp),
+                senderId: senderHex,
+                recipientId: this.device.peerIDHex,
+                text,
+                isOutgoing: false,
+            });
+            this.runtime?.telemetry.recordMessageDelivered(
+                inner.messageId,
+                this.device.peerIDHex,
+                nowMs,
+                hops,
+                transportName
+            );
+            // Send automatic DELIVERED ACK inside NOISE_ENCRYPTED
+            this.sendNoiseEncrypted(
+                senderHex,
+                NoisePayloadType.DELIVERED,
+                inner.messageId,
+                new Uint8Array(0),
+                nowMs
+            );
+        } else if (inner.payloadType === NoisePayloadType.DELIVERED) {
+            this.deliveredMessageIds.add(inner.messageId);
+            this.log('DM DELIVERED ACK received', {
+                from: senderHex.substring(0, 8),
+                id: inner.messageId,
+            });
+        } else if (inner.payloadType === NoisePayloadType.VOICE_NOTE) {
+            this.runtime?.telemetry.recordMessageDelivered(
+                inner.messageId,
+                this.device.peerIDHex,
+                nowMs,
+                hops,
+                transportName
+            );
         }
     }
 
@@ -703,8 +1051,28 @@ export class BitchatAppSimulator implements DeviceTickable {
         const isDirectTtl = packet.ttl === this.policy.maxTtl;
         if (isDirectTtl && ingressConnection) {
             this.linkPeerBindings.set(ingressConnection.linkID, senderHex);
+            // Schedule initial peer gossip sync 1 s after direct peer binding (GossipSyncManager.kt)
+            if (
+                this.isSyncEnabled &&
+                this.runtime?.scheduler &&
+                !this.initialSyncScheduledPeers.has(senderHex)
+            ) {
+                this.initialSyncScheduledPeers.add(senderHex);
+                this.runtime.scheduler.scheduleIn(
+                    this.gossipSync.config.initialPeerSyncDelayMs,
+                    fireNow => {
+                        if (this.hasBoundDirectLink(senderHex) && this.isSyncEnabled) {
+                            this.sendSyncRequest(senderHex, fireNow);
+                        }
+                    },
+                    `init-sync:${this.device.peerIDHex}:${senderHex}`
+                );
+            }
         }
         const isDirect = isDirectTtl && from.peerIDHex === senderHex;
+
+        // Cache latest verified ANNOUNCE in GossipSyncManager for history reconciliation
+        this.gossipSync.onPublicPacketSeen(packet, nowMs);
 
         // Update MeshGraph with timestamp ordering and 10-neighbor cap
         const neighborHexes = neighborsBytes

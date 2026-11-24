@@ -5,11 +5,11 @@ import { BitchatDevice } from '../BitchatDevice';
 
 describe('SimulationEngine - Connectivity', () => {
     it('should form connections when people are close', () => {
-        const engine = new SimulationEngine();
-        
-        const p1 = new BitchatPerson('p1', { x: 0, y: 0 }, BitchatDevice.createRandom());
+        const engine = new SimulationEngine({ seed: 100 });
+
+        const p1 = new BitchatPerson('p1', { x: 0, y: 0 }, BitchatDevice.createRandom(engine.rng));
         p1.device.alwaysScan = true;
-        const p2 = new BitchatPerson('p2', { x: 50, y: 0 }, BitchatDevice.createRandom()); // dist 50 < 100
+        const p2 = new BitchatPerson('p2', { x: 35, y: 0 }, BitchatDevice.createRandom(engine.rng)); // dist 35 < 100
         
         engine.addPerson(p1);
         engine.addPerson(p2);
@@ -30,11 +30,11 @@ describe('SimulationEngine - Connectivity', () => {
     });
 
     it('should break connections when people move apart', () => {
-        const engine = new SimulationEngine();
-        
-        const p1 = new BitchatPerson('p1', { x: 0, y: 0 }, BitchatDevice.createRandom());
+        const engine = new SimulationEngine({ seed: 101 });
+
+        const p1 = new BitchatPerson('p1', { x: 0, y: 0 }, BitchatDevice.createRandom(engine.rng));
         p1.device.alwaysScan = true;
-        const p2 = new BitchatPerson('p2', { x: 50, y: 0 }, BitchatDevice.createRandom()); 
+        const p2 = new BitchatPerson('p2', { x: 35, y: 0 }, BitchatDevice.createRandom(engine.rng)); 
         
         engine.addPerson(p1);
         engine.addPerson(p2);
