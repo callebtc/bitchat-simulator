@@ -1,7 +1,9 @@
 import { BitchatConnection } from './BitchatConnection';
-import { BitchatPacket } from '../protocol/BitchatPacket';
+import { BitchatPacket, toHex } from '../protocol/BitchatPacket';
+import { BinaryProtocol } from '../protocol/BinaryProtocol';
 import { BitchatDevice } from './BitchatDevice';
 import { EnvironmentManager, calculateLineAttenuationStats } from './environment';
+import { SeededRandom } from './SeededRandom';
 
 // RSSI Configuration - mutable so UI can modify
 export const RSSI_CONFIG = {
@@ -42,38 +44,42 @@ export class BitchatConnectionBLE extends BitchatConnection {
     rssi: number = RSSI_CONFIG.AT_1M;
     private rssiTarget: number = RSSI_CONFIG.AT_1M;
     private noisePhase: number = 0;
-    
+    private lastRssiUpdateMs: number | null = null;
+
     // Detailed stats for UI
     lastStats: RSSIStats | null = null;
-    
+
     // Environment reference (set by SimulationEngine)
     environment: EnvironmentManager | null = null;
 
-    constructor(endpointA: BitchatDevice, endpointB: BitchatDevice, initiator?: BitchatDevice) {
-        super(endpointA, endpointB, initiator);
-        // Initialize noise phase randomly so connections don't all fluctuate in sync
-        this.noisePhase = Math.random() * Math.PI * 2;
-        
-        // Initialize RSSI based on actual positions/strengths immediately so we don't start at -40 if we are far away
+    constructor(
+        endpointA: BitchatDevice,
+        endpointB: BitchatDevice,
+        initiator?: BitchatDevice,
+        rng?: SeededRandom,
+        linkID?: string
+    ) {
+        super(endpointA, endpointB, initiator, 'BLE', linkID);
+        this.rng = rng;
+        // Initialize noise phase deterministically when rng is supplied
+        this.noisePhase = (rng ? rng.next() : Math.random()) * Math.PI * 2;
+
         if (endpointA.position && endpointB.position) {
             const { targetRSSI } = BitchatConnectionBLE.calculateTargetRSSI(
-                endpointA.position, 
-                endpointB.position, 
+                endpointA.position,
+                endpointB.position,
                 endpointA.bluetoothStrength,
                 endpointB.bluetoothStrength,
-                null // Environment will be set later via property, but this gives a decent baseline
+                null
             );
             this.rssi = targetRSSI;
+            this.rssiTarget = targetRSSI;
         }
     }
 
-    /**
-     * Centralized RSSI calculation logic.
-     * Calculates the theoretical target RSSI based on distance, environment, and device strengths.
-     */
     static calculateTargetRSSI(
-        posA: {x: number, y: number}, 
-        posB: {x: number, y: number}, 
+        posA: { x: number; y: number },
+        posB: { x: number; y: number },
         strengthA: number,
         strengthB: number,
         environment: EnvironmentManager | null
@@ -101,17 +107,11 @@ export class BitchatConnectionBLE extends BitchatConnection {
             targetRSSI -= stats.total;
         }
 
-        // 3. Bluetooth Strength Gain
-        // Baseline is 50. 100 is 2x power (+3dB). 25 is 0.5x power (-3dB).
-        // Gain = 10 * log10(strength / 50)
-        // We sum the gains from both sides (TX power boost + RX sensitivity boost equivalent)
-        // Actually, typically TX power matters most. But let's assume 'strength' implies better antenna/chipset for both.
-        // Let's treat it as: Connection Gain = Gain(A) + Gain(B)
-        
+        // 3. Bluetooth Strength Gain (50 = 0 dB, 100 = +3 dB, 25 = -3 dB)
         const gainA = 10 * Math.log10(Math.max(1, strengthA) / 50);
         const gainB = 10 * Math.log10(Math.max(1, strengthB) / 50);
         const totalGain = gainA + gainB;
-        
+
         targetRSSI += totalGain;
 
         return {
@@ -121,17 +121,14 @@ export class BitchatConnectionBLE extends BitchatConnection {
             materialLoss,
             wallsCrossed,
             gain: totalGain,
-            totalLoss: pathLoss + wallLoss + materialLoss - totalGain, // Negative loss is gain? Or just net loss.
-            targetRSSI
+            totalLoss: pathLoss + wallLoss + materialLoss - totalGain,
+            targetRSSI,
         };
     }
 
-    /**
-     * Calculate theoretical RSSI based on distance and environment (no noise/smoothing)
-     */
     static estimateRSSI(
-        posA: {x: number, y: number}, 
-        posB: {x: number, y: number}, 
+        posA: { x: number; y: number },
+        posB: { x: number; y: number },
         strengthA: number,
         strengthB: number,
         environment: EnvironmentManager | null
@@ -140,31 +137,35 @@ export class BitchatConnectionBLE extends BitchatConnection {
         return this.calculateTargetRSSI(posA, posB, strengthA, strengthB, environment).targetRSSI;
     }
 
-    send(packet: BitchatPacket, from: BitchatDevice): void {
-        if (!this.isActive) return;
+    send(packet: BitchatPacket, from: BitchatDevice, nowMs?: number): boolean {
+        if (!this.isActive) return false;
+
+        const now = nowMs ?? this.clock();
+        const encoded = BinaryProtocol.encode(packet);
+        const wireBytes = encoded ? encoded.length : packet.payload.length + 22;
 
         this.packetsSent++;
-        
-        // Visualize immediately (so we see it leave the sender)
+        this.bytesSent += wireBytes;
+        this.lastActivityAtMs = now;
+
+        const isRelay = from.peerIDHex !== toHex(packet.senderID);
+        this.telemetry?.recordPacketTransmitted(now, wireBytes, isRelay);
+
         if (this.onPacketSent) {
             this.onPacketSent(packet, from);
         }
 
-        // Simulate network latency
-        const now = performance.now();
         this.packetQueue.push({
             packet,
             from,
-            deliverAt: now + this.latencyMs
+            deliverAt: now + this.latencyMs,
         });
+        return true;
     }
 
     /**
      * Update RSSI based on current positions and environment.
-     * Should be called each simulation tick.
-     * 
-     * @param now - Current timestamp in milliseconds
-     * @returns true if connection should remain active, false if should disconnect
+     * Advances noisePhase strictly by elapsed dt (fixing previous absolute-now bug).
      */
     updateRSSI(now: number): boolean {
         if (!this.isActive) return false;
@@ -173,51 +174,45 @@ export class BitchatConnectionBLE extends BitchatConnection {
         const posB = this.endpointB.position;
 
         if (!posA || !posB) {
-            return true; // Can't calculate, keep connection
+            return true;
         }
 
-        // Use centralized calculation
         const stats = BitchatConnectionBLE.calculateTargetRSSI(
-            posA, 
-            posB, 
+            posA,
+            posB,
             this.endpointA.bluetoothStrength,
             this.endpointB.bluetoothStrength,
             this.environment
         );
 
-        // Store detailed stats
         this.lastStats = stats;
         this.rssiTarget = stats.targetRSSI;
 
-        // Add noise
-        this.noisePhase += (now * 0.001) * (Math.PI * 2 / (RSSI_CONFIG.NOISE_PERIOD / 1000));
-        const noise = Math.sin(this.noisePhase) * RSSI_CONFIG.NOISE_AMPLITUDE;
+        // Advance sinusoidal fading phase by elapsed dt in seconds
+        const dtSec =
+            this.lastRssiUpdateMs !== null ? Math.max(0, (now - this.lastRssiUpdateMs) * 0.001) : 0;
+        this.lastRssiUpdateMs = now;
+        this.noisePhase =
+            (this.noisePhase + dtSec * ((Math.PI * 2) / (RSSI_CONFIG.NOISE_PERIOD / 1000))) %
+            (Math.PI * 2);
 
-        // Smooth transition to target with noise
+        const noise = Math.sin(this.noisePhase) * RSSI_CONFIG.NOISE_AMPLITUDE;
         const targetWithNoise = this.rssiTarget + noise;
         this.rssi = this.rssi + (targetWithNoise - this.rssi) * RSSI_CONFIG.SMOOTHING_FACTOR;
 
-        // Check disconnect threshold
         if (this.rssi < RSSI_CONFIG.DISCONNECT_THRESHOLD) {
-            return false; // Signal to disconnect
+            return false;
         }
 
         return true;
     }
 
-    /**
-     * Get RSSI as a normalized value (0-1) for visualization.
-     * 0 = at disconnect threshold, 1 = maximum good signal
-     */
     getRSSINormalized(): number {
         const range = RSSI_CONFIG.MAX_RSSI - RSSI_CONFIG.DISCONNECT_THRESHOLD;
         const value = (this.rssi - RSSI_CONFIG.DISCONNECT_THRESHOLD) / range;
         return Math.max(0, Math.min(1, value));
     }
 
-    /**
-     * Get current target RSSI without noise.
-     */
     getTargetRSSI(): number {
         return this.rssiTarget;
     }

@@ -1,12 +1,16 @@
 import { ConnectionManager } from './ConnectionManager';
-import { BitchatPacket } from '../protocol/BitchatPacket';
+import { BitchatPacket, toHex } from '../protocol/BitchatPacket';
 import { LogManager } from './LogManager';
 import { Point } from './types';
+import { SeededRandom } from './SeededRandom';
+import { EventScheduler } from './EventScheduler';
+import { TelemetryCollector } from './TelemetryCollector';
+import { BitchatConnection } from './BitchatConnection';
 
 export enum PowerMode {
     ECO = 'ECO',
     NORMAL = 'NORMAL',
-    PERFORMANCE = 'PERFORMANCE'
+    PERFORMANCE = 'PERFORMANCE',
 }
 
 export interface ConnectionSettings {
@@ -18,122 +22,166 @@ export interface ConnectionSettings {
 export const SCAN_INTERVALS: Record<PowerMode, number> = {
     [PowerMode.ECO]: 60000,
     [PowerMode.NORMAL]: 30000,
-    [PowerMode.PERFORMANCE]: 10000
+    [PowerMode.PERFORMANCE]: 10000,
 };
+
+export interface DeviceRuntime {
+    clock: () => number;
+    scheduler: EventScheduler;
+    rng: SeededRandom;
+    telemetry: TelemetryCollector;
+    getPopulationCount?: () => number;
+}
 
 export interface DeviceTickable {
     tick(now: number): void;
     setLogger?(logger: LogManager): void;
+    attachRuntime?(runtime: DeviceRuntime): void;
+    onConnectionEstablished?(connection: BitchatConnection, nowMs: number): void;
+    onConnectionBroken?(connection: BitchatConnection, nowMs: number): void;
+    onGracefulStop?(nowMs: number): void;
 }
 
 export class BitchatDevice {
     readonly peerID: Uint8Array;
+    readonly peerIDHex: string;
+    /** Symbolic 32-byte Curve25519 static public key for realistic wire sizing */
+    readonly noisePublicKey: Uint8Array;
+    /** Symbolic 32-byte Ed25519 signing public key for realistic wire sizing */
+    readonly signingPublicKey: Uint8Array;
     nickname: string;
     connectionManager: ConnectionManager;
     appSimulator?: DeviceTickable;
-    position?: Point; 
+    position?: Point;
     logger?: LogManager;
-    
+    runtime?: DeviceRuntime;
+    rng: SeededRandom;
+
     // Power & Scanning
     powerMode: PowerMode = PowerMode.PERFORMANCE;
     bluetoothStrength: number = 50; // 0-100, 50 is baseline
     lastScanTime: number = -1;
-    // The delay until the next scan, randomized each cycle to prevent synchronization
     currentScanDelay: number = -1;
     isScanning: boolean = false;
     alwaysScan: boolean = false; // For testing
-    
+
     // Limits
     connectionSettings: ConnectionSettings = {
         maxClients: 8,
         maxServers: 8,
-        maxTotal: 8
+        maxTotal: 8,
     };
-    
-    // Callbacks
-    onPacketReceived?: (packet: BitchatPacket, from: BitchatDevice) => void;
 
-    constructor(peerID: Uint8Array, nickname: string) {
+    // Callbacks
+    onPacketReceived?: (
+        packet: BitchatPacket,
+        from: BitchatDevice,
+        connection?: BitchatConnection
+    ) => void;
+
+    constructor(peerID: Uint8Array, nickname: string, rng?: SeededRandom) {
         this.peerID = peerID;
+        this.peerIDHex = toHex(peerID);
         this.nickname = nickname;
+        this.rng = rng ?? new SeededRandom(0x13370001 ^ (peerID[0] << 24) ^ (peerID[1] << 16) ^ (peerID[2] << 8) ^ peerID[3]);
+        this.noisePublicKey = this.rng.fork('noise-pk').nextBytes(32);
+        this.signingPublicKey = this.rng.fork('sign-pk').nextBytes(32);
         this.connectionManager = new ConnectionManager(this);
     }
-    
-    setPowerMode(mode: PowerMode) {
+
+    attachRuntime(runtime: DeviceRuntime): void {
+        this.runtime = runtime;
+        this.rng = runtime.rng.fork(`device:${this.peerIDHex}`);
+        this.appSimulator?.attachRuntime?.(runtime);
+    }
+
+    now(): number {
+        return this.runtime ? this.runtime.clock() : 0;
+    }
+
+    setPowerMode(mode: PowerMode): void {
         this.powerMode = mode;
         this.logger?.log('INFO', 'DEVICE', `Power Mode set to ${mode}`, this.peerIDHex);
     }
-    
-    updateSettings(settings: Partial<ConnectionSettings>) {
+
+    updateSettings(settings: Partial<ConnectionSettings>): void {
         this.connectionSettings = { ...this.connectionSettings, ...settings };
         this.connectionManager.enforceLimits();
-        this.logger?.log('INFO', 'DEVICE', `Connection Limits updated`, this.peerIDHex, this.connectionSettings);
+        this.logger?.log(
+            'INFO',
+            'DEVICE',
+            'Connection Limits updated',
+            this.peerIDHex,
+            this.connectionSettings
+        );
     }
-    
-    setLogger(logger: LogManager) {
+
+    setLogger(logger: LogManager): void {
         this.logger = logger;
         this.connectionManager.setLogger(logger);
         if (this.appSimulator?.setLogger) {
             this.appSimulator.setLogger(logger);
         }
     }
-    
-    setAppSimulator(sim: DeviceTickable) {
+
+    setAppSimulator(sim: DeviceTickable): void {
         this.appSimulator = sim;
         if (this.logger && sim.setLogger) {
             sim.setLogger(this.logger);
         }
+        if (this.runtime && sim.attachRuntime) {
+            sim.attachRuntime(this.runtime);
+        }
     }
 
-    tick(now: number) {
-        // App Logic
+    tick(now: number): void {
         if (this.appSimulator) {
             this.appSimulator.tick(now);
         }
-        
+
         // Scanning Logic
         this.isScanning = this.alwaysScan;
         const baseInterval = SCAN_INTERVALS[this.powerMode];
-        
+
         if (this.lastScanTime === -1) {
-            // First tick initialization
             this.lastScanTime = now;
-            // Initial random offset to desynchronize start times
-            this.currentScanDelay = Math.random() * baseInterval;
+            this.currentScanDelay = this.rng.next() * baseInterval;
         }
 
         if (now - this.lastScanTime > this.currentScanDelay) {
             this.isScanning = true;
             this.lastScanTime = now;
-            
-            // Calculate next delay: Base Interval ± 20% Jitter
-            // This prevents "thundering herd" re-synchronization after CPU lags
-            const jitter = (Math.random() - 0.5) * 0.4; // -0.2 to +0.2
+            const jitter = (this.rng.next() - 0.5) * 0.4; // -0.2 to +0.2
             this.currentScanDelay = baseInterval * (1 + jitter);
         }
     }
 
-    get peerIDHex(): string {
-        return Array.from(this.peerID)
-            .map(b => b.toString(16).padStart(2, '0'))
-            .join('');
-    }
-    
-    receivePacket(packet: BitchatPacket, from: BitchatDevice) {
+    receivePacket(
+        packet: BitchatPacket,
+        from: BitchatDevice,
+        connection?: BitchatConnection
+    ): void {
         if (this.onPacketReceived) {
-            this.onPacketReceived(packet, from);
+            this.onPacketReceived(packet, from, connection);
         }
     }
 
-    static createRandom(): BitchatDevice {
-        const id = new Uint8Array(8);
-        crypto.getRandomValues(id);
-        const hex = Array.from(id).map(b => b.toString(16).padStart(2, '0')).join('');
-        const device = new BitchatDevice(id, `User-${hex.substring(0, 4)}`);
-        
-        // Randomize bluetooth strength between 25 and 100
-        device.bluetoothStrength = 25 + Math.random() * 75;
-        
+    /** Helper used for telemetry checks without repeating hex conversion. */
+    peerIDHexFallback(senderID: Uint8Array): string {
+        return toHex(senderID);
+    }
+
+    static createRandom(rng?: SeededRandom): BitchatDevice {
+        let id: Uint8Array;
+        if (rng) {
+            id = rng.nextBytes(8);
+        } else {
+            id = new Uint8Array(8);
+            crypto.getRandomValues(id);
+        }
+        const hex = toHex(id);
+        const device = new BitchatDevice(id, `User-${hex.substring(0, 4)}`, rng?.fork(`dev:${hex}`));
+        device.bluetoothStrength = 25 + (rng ? rng.next() : Math.random()) * 75;
         return device;
     }
 }

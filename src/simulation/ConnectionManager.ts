@@ -101,25 +101,27 @@ export class ConnectionManager {
         }
     }
 
-    broadcast(packet: BitchatPacket, exclude?: BitchatDevice) {
+    broadcast(packet: BitchatPacket, exclude?: BitchatDevice, nowMs?: number): boolean {
+        let accepted = false;
         this.connections.forEach(conn => {
             if (conn.isActive) {
                 const other = conn.getOtherParty(this.owner);
                 if (other !== exclude) {
-                    conn.send(packet, this.owner);
+                    if (conn.send(packet, this.owner, nowMs)) {
+                        accepted = true;
+                    }
                 }
             }
         });
+        return accepted;
     }
 
-    sendTo(peerIDHex: string, packet: BitchatPacket) {
-        // Find connection to peerID
-        // This is inefficient O(N), but fine for small N.
+    sendTo(peerIDHex: string, packet: BitchatPacket, nowMs?: number): boolean {
         for (const conn of this.connections.values()) {
+            if (!conn.isActive) continue;
             const other = conn.getOtherParty(this.owner);
             if (other.peerIDHex === peerIDHex) {
-                conn.send(packet, this.owner);
-                return true;
+                return conn.send(packet, this.owner, nowMs);
             }
         }
         return false;

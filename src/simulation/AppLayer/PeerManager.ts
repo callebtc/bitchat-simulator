@@ -9,8 +9,14 @@ export interface PeerInfo {
 export class PeerManager {
     private peers: Map<string, PeerInfo> = new Map();
 
-    updatePeer(id: string, nickname: string, isDirect: boolean, hops: number = 0) {
-        const now = Date.now();
+    updatePeer(
+        id: string,
+        nickname: string,
+        isDirect: boolean,
+        hops: number = 0,
+        nowMs: number = 0
+    ): void {
+        const now = nowMs;
         const existing = this.peers.get(id);
 
         if (existing) {

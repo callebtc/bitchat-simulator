@@ -3,49 +3,62 @@ import { BitchatDevice } from './BitchatDevice';
 import { BitchatPerson, MovementMode } from './BitchatPerson';
 import { BitchatAppSimulator } from './AppLayer/BitchatAppSimulator';
 
-export function setupDemo(engine: SimulationEngine, count: number = 5) {
+let nextSpawnSeq = 1;
+
+export function setupDemo(engine: SimulationEngine, count: number = 5): void {
     engine.reset();
-    
-    for(let i=0; i<count; i++) {
-        const d = BitchatDevice.createRandom();
-        d.nickname = `User-${d.peerIDHex.substring(0,4)}`;
-        
-        // Attach Simulator
+    nextSpawnSeq = 1;
+
+    for (let i = 0; i < count; i++) {
+        const d = BitchatDevice.createRandom(engine.rng);
+        d.nickname = `User-${d.peerIDHex.substring(0, 4)}`;
+
         const sim = new BitchatAppSimulator(d);
         d.setAppSimulator(sim);
-        
-        const p = new BitchatPerson(`p-${Date.now()}-${i}`, {
-            x: (Math.random() - 0.5) * 200, 
-            y: (Math.random() - 0.5) * 200
-        }, d);
-        
+
+        const p = new BitchatPerson(
+            `p-${i}`,
+            {
+                x: (engine.rng.next() - 0.5) * 200,
+                y: (engine.rng.next() - 0.5) * 200,
+            },
+            d,
+            engine.rng.fork(`person:p-${i}`)
+        );
+
         engine.addPerson(p);
     }
 }
 
 export interface AddNodeOptions {
-    center?: { x: number, y: number };
+    center?: { x: number; y: number };
     initialMode?: MovementMode;
 }
 
-export function addRandomNode(engine: SimulationEngine, options?: AddNodeOptions) {
-    const d = BitchatDevice.createRandom();
-    d.nickname = `User-${d.peerIDHex.substring(0,4)}`;
+export function addRandomNode(engine: SimulationEngine, options?: AddNodeOptions): BitchatPerson {
+    const d = BitchatDevice.createRandom(engine.rng);
+    d.nickname = `User-${d.peerIDHex.substring(0, 4)}`;
     const sim = new BitchatAppSimulator(d);
     d.setAppSimulator(sim);
-    
+
     const cx = options?.center?.x ?? 0;
     const cy = options?.center?.y ?? 0;
-    
-    const p = new BitchatPerson(`p-${Date.now()}-${Math.floor(Math.random() * 100000)}`, {
-        x: cx + (Math.random() - 0.5) * 100, 
-        y: cy + (Math.random() - 0.5) * 100
-    }, d);
-    
+
+    const id = `p-${Math.floor(engine.simTimeMs)}-${nextSpawnSeq++}`;
+    const p = new BitchatPerson(
+        id,
+        {
+            x: cx + (engine.rng.next() - 0.5) * 100,
+            y: cy + (engine.rng.next() - 0.5) * 100,
+        },
+        d,
+        engine.rng.fork(`person:${id}`)
+    );
+
     engine.addPerson(p);
-    
-    // Set initial movement mode if specified
+
     if (options?.initialMode) {
         p.setMode(options.initialMode);
     }
+    return p;
 }

@@ -28,7 +28,8 @@ export class BitchatAppSimulator {
     private currentAnnounceDelay: number = ANNOUNCE_INTERVAL;
     private seenPackets: Set<string> = new Set();
     private logger?: LogManager;
-    
+    private currentNowMs: number = 0;
+
     // Config
     isAnnouncing: boolean = true;
 
@@ -44,21 +45,19 @@ export class BitchatAppSimulator {
     }
 
     tick(now: number) {
+        this.currentNowMs = now;
         if (!this.isAnnouncing) return;
-        
+
         if (this.lastAnnounceTime === -1) {
-            // First tick initialization
             this.lastAnnounceTime = now;
-            // Initial random offset
-            this.currentAnnounceDelay = Math.random() * ANNOUNCE_INTERVAL;
+            this.currentAnnounceDelay = this.device.rng.next() * ANNOUNCE_INTERVAL;
         }
-        
+
         if (now - this.lastAnnounceTime > this.currentAnnounceDelay) {
-            this.sendAnnounce();
+            this.sendAnnounce(now);
             this.lastAnnounceTime = now;
-            
-            // Calculate next delay: Base Interval ± 20% Jitter
-            const jitter = (Math.random() - 0.5) * 0.4;
+
+            const jitter = (this.device.rng.next() - 0.5) * 0.4;
             this.currentAnnounceDelay = ANNOUNCE_INTERVAL * (1 + jitter);
         }
     }
@@ -70,40 +69,41 @@ export class BitchatAppSimulator {
         }
     }
 
-    private sendAnnounce() {
-        // Construct TLV Payload
-        // 1. Nickname
+    private sendAnnounce(nowMs: number = this.currentNowMs) {
         const tlvNick = TLV.encodeNickname(this.device.nickname);
-        
-        // 2. Neighbors (Gossip)
         const connectedPeers = this.device.connectionManager.getConnectedPeers();
         const peerIDs = connectedPeers.map(p => p.peerID);
         const tlvNeighbors = TLV.encodeNeighbors(peerIDs);
-        
+
         const payload = new Uint8Array(tlvNick.length + tlvNeighbors.length);
         payload.set(tlvNick, 0);
         payload.set(tlvNeighbors, tlvNick.length);
-        
+
         const packet = createPacket(
-            MessageType.ANNOUNCE, 
-            this.device.peerID, 
-            payload, 
-            MAX_TTL, 
-            SpecialRecipients.BROADCAST
+            MessageType.ANNOUNCE,
+            this.device.peerID,
+            payload,
+            MAX_TTL,
+            SpecialRecipients.BROADCAST,
+            nowMs
         );
 
-        // Update my own graph with my direct neighbors so I can calculate paths correctly
-        // (Wait, MeshGraph needs other peers' announcements. I know my own connections.)
-        this.meshGraph.updateFromAnnouncement(this.device.peerIDHex, connectedPeers.map(p => p.peerIDHex));
+        this.meshGraph.updateFromAnnouncement(
+            this.device.peerIDHex,
+            connectedPeers.map(p => p.peerIDHex)
+        );
 
-        // Mark as seen so we don't echo it back if it loops
         this.markSeen(packet);
-        this.device.connectionManager.broadcast(packet);
-        
-        this.log(`Broadcasting ANNOUNCE`, { 
-            ttl: MAX_TTL, 
-            neighbors: connectedPeers.length 
-        }, 'DEBUG');
+        this.device.connectionManager.broadcast(packet, undefined, nowMs);
+
+        this.log(
+            `Broadcasting ANNOUNCE`,
+            {
+                ttl: MAX_TTL,
+                neighbors: connectedPeers.length,
+            },
+            'DEBUG'
+        );
     }
 
     sendMessage(text: string, recipientIdHex?: string) {
@@ -146,46 +146,51 @@ export class BitchatAppSimulator {
             }
         }
         
+        const nowMs = this.device.runtime ? this.device.runtime.clock() : this.currentNowMs;
         const packet = createPacket(
             MessageType.MESSAGE,
             this.device.peerID,
             payload,
             MAX_TTL,
-            recipientID || SpecialRecipients.BROADCAST
+            recipientID || SpecialRecipients.BROADCAST,
+            nowMs
         );
-        
+
         if (route) {
-            packet.version = 2; // Must upgrade to V2 for routing
+            packet.version = 2;
             packet.route = route;
         }
-        
+
         // Store locally
         this.messages.push({
             id: this.getPacketId(packet),
-            timestamp: Date.now(),
+            timestamp: nowMs,
             senderId: this.device.peerIDHex,
             recipientId: recipientIdHex,
             text: text,
-            isOutgoing: true
+            isOutgoing: true,
         });
-        
-        // Mark seen
+
         this.markSeen(packet);
 
-        // Send Logic
         let sent = false;
         if (nextHopHex) {
-             // Unicast to first hop
-             sent = this.device.connectionManager.sendTo(nextHopHex, packet);
-             if (sent) {
-                 this.log(`Unicast Message (Source Routed)`, { nextHop: nextHopHex.substring(0,6) });
-             } else {
-                 this.log(`Failed to unicast to next hop, falling back to broadcast`, { nextHop: nextHopHex.substring(0,6) }, 'DEBUG');
-             }
+            sent = this.device.connectionManager.sendTo(nextHopHex, packet, nowMs);
+            if (sent) {
+                this.log(`Unicast Message (Source Routed)`, {
+                    nextHop: nextHopHex.substring(0, 6),
+                });
+            } else {
+                this.log(
+                    `Failed to unicast to next hop, falling back to broadcast`,
+                    { nextHop: nextHopHex.substring(0, 6) },
+                    'DEBUG'
+                );
+            }
         }
 
         if (!sent) {
-            this.device.connectionManager.broadcast(packet);
+            this.device.connectionManager.broadcast(packet, undefined, nowMs);
             this.log(recipientID ? `Sent DM (Broadcast)` : `Sent Broadcast`, { text: text });
         }
     }
@@ -261,7 +266,8 @@ export class BitchatAppSimulator {
                  }
                  
                  // Try Unicast
-                 const success = this.device.connectionManager.sendTo(nextHopHex, relayPacket);
+                 const relayNow = this.device.runtime ? this.device.runtime.clock() : this.currentNowMs;
+                 const success = this.device.connectionManager.sendTo(nextHopHex, relayPacket, relayNow);
                  if (success) {
                      this.log(`Relaying Source Routed Packet`, { nextHop: nextHopHex.substring(0,6) });
                      routed = true;
@@ -281,7 +287,8 @@ export class BitchatAppSimulator {
             // Default Flood / Fallback
             if (packet.recipientID === undefined || !isForMe) { // Don't relay if it was for me (already checked above but safe to double check)
                  // Split Horizon: Don't send back to 'from'
-                 this.device.connectionManager.broadcast(relayPacket, from);
+                 const relayNow = this.device.runtime ? this.device.runtime.clock() : this.currentNowMs;
+                 this.device.connectionManager.broadcast(relayPacket, from, relayNow);
                  // Only log generic relay if not too verbose
                  // this.log(`Relaying Flood`, { ttl: relayPacket.ttl });
             }
@@ -363,7 +370,8 @@ export class BitchatAppSimulator {
         // But in Sim, 'from' is reliable.
         const isDirect = from.peerIDHex === senderHex;
 
-        this.peerManager.updatePeer(senderHex, nickname, isDirect, MAX_TTL - packet.ttl);
+        const nowMs = this.device.runtime ? this.device.runtime.clock() : this.currentNowMs;
+        this.peerManager.updatePeer(senderHex, nickname, isDirect, MAX_TTL - packet.ttl, nowMs);
     }
     
     private isForMe(packet: BitchatPacket): boolean {

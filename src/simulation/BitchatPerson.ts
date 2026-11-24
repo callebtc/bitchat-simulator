@@ -2,6 +2,7 @@ import { BitchatDevice } from './BitchatDevice';
 import { Point, Vector2 } from './types';
 import { LogManager } from './LogManager';
 import { EnvironmentManager, PathFinder, PathResult } from './environment';
+import { SeededRandom } from './SeededRandom';
 
 export enum MovementMode {
     STILL = 'STILL',
@@ -69,16 +70,27 @@ export class BitchatPerson {
     /** Minimum distance to travel to not be considered stuck */
     private readonly BUSY_MIN_PROGRESS = 1.0;  // Must move at least 1 meter
 
-    constructor(id: string, position: Point, device: BitchatDevice) {
+    /** Random number generator for deterministic movement */
+    private rng: SeededRandom;
+
+    constructor(id: string, position: Point, device: BitchatDevice, rng?: SeededRandom) {
         this.id = id;
         this.position = position;
         this.velocity = { x: 0, y: 0 };
         this.device = device;
         this.device.position = this.position; // Link position
-        
+        this.rng = rng ?? device.rng.fork(`person:${id}`);
+
         // Randomize max speed between 1.0 and 3.0 m/s (average 2.0)
-        // Previous static default was 1.5
-        this.maxSpeed = 1.0 + Math.random() * 2.0; 
+        this.maxSpeed = 1.0 + this.rng.next() * 2.0;
+    }
+
+    setRng(rng: SeededRandom): void {
+        this.rng = rng;
+    }
+
+    private rand(): number {
+        return this.rng.next();
     }
 
     setLogger(logger: LogManager) {
@@ -94,8 +106,8 @@ export class BitchatPerson {
         if (mode === MovementMode.RANDOM_WALK) {
             // Kickstart
              this.velocity = { 
-                 x: (Math.random() - 0.5) * this.maxSpeed, 
-                 y: (Math.random() - 0.5) * this.maxSpeed 
+                 x: (this.rand() - 0.5) * this.maxSpeed, 
+                 y: (this.rand() - 0.5) * this.maxSpeed 
              };
         }
         if (mode === MovementMode.BUSY) {
@@ -169,8 +181,8 @@ export class BitchatPerson {
         if (!this.environment) {
             // No environment, use default bounds
             return {
-                x: (Math.random() - 0.5) * 800,
-                y: (Math.random() - 0.5) * 800
+                x: (this.rand() - 0.5) * 800,
+                y: (this.rand() - 0.5) * 800
             };
         }
 
@@ -189,8 +201,8 @@ export class BitchatPerson {
             
             for (let attempt = 0; attempt < maxAttempts; attempt++) {
                 // Generate random point within building bounds
-                const x = minX + Math.random() * (maxX - minX);
-                const y = minY + Math.random() * (maxY - minY);
+                const x = minX + this.rand() * (maxX - minX);
+                const y = minY + this.rand() * (maxY - minY);
                 const candidate = { x, y };
 
                 // Verify it's actually inside this specific building
@@ -215,8 +227,8 @@ export class BitchatPerson {
         const maxY = bounds ? bounds.localBounds.maxY : 400;
         
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            const x = minX + Math.random() * (maxX - minX);
-            const y = minY + Math.random() * (maxY - minY);
+            const x = minX + this.rand() * (maxX - minX);
+            const y = minY + this.rand() * (maxY - minY);
             const candidate = { x, y };
             
             // Check if it's outside ALL buildings
@@ -228,8 +240,8 @@ export class BitchatPerson {
         
         // Couldn't find valid target, just return a point outside buildings nearby
         return {
-            x: this.position.x + (Math.random() - 0.5) * 100,
-            y: this.position.y + (Math.random() - 0.5) * 100
+            x: this.position.x + (this.rand() - 0.5) * 100,
+            y: this.position.y + (this.rand() - 0.5) * 100
         };
     }
     
@@ -328,7 +340,7 @@ export class BitchatPerson {
             // If blocked while seeking target, adjust wander angle for random walk
             if (result.blocked && this.mode === MovementMode.RANDOM_WALK) {
                 // Turn away from wall
-                this.wanderAngle += Math.PI * 0.5 + Math.random() * Math.PI;
+                this.wanderAngle += Math.PI * 0.5 + this.rand() * Math.PI;
             }
         } else {
             // No collision detection, move freely
@@ -348,7 +360,7 @@ export class BitchatPerson {
         
         // Switch to random walk
         this.mode = MovementMode.RANDOM_WALK;
-        this.wanderAngle = Math.random() * Math.PI * 2;
+        this.wanderAngle = this.rand() * Math.PI * 2;
         this.velocity = { 
             x: Math.cos(this.wanderAngle) * this.maxSpeed * 0.5, 
             y: Math.sin(this.wanderAngle) * this.maxSpeed * 0.5 
@@ -377,7 +389,7 @@ export class BitchatPerson {
             this.position.y = result.position.y;
             
             if (result.blocked) {
-                this.wanderAngle += Math.PI * 0.5 + Math.random() * Math.PI;
+                this.wanderAngle += Math.PI * 0.5 + this.rand() * Math.PI;
             }
         } else {
             this.position.x = newX;
@@ -456,7 +468,7 @@ export class BitchatPerson {
     private updateRandomWalk(_dt: number) {
         // Simple wander: Perturb velocity vector
         // Or steer angle
-        this.wanderAngle += (Math.random() - 0.5) * this.WANDER_STRENGTH;
+        this.wanderAngle += (this.rand() - 0.5) * this.WANDER_STRENGTH;
         
         // Desired velocity
         const speed = this.maxSpeed * 0.5; // Half speed for wandering
