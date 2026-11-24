@@ -1,10 +1,22 @@
 import { BitchatConnection } from './BitchatConnection';
-import { BitchatPacket, toHex } from '../protocol/BitchatPacket';
+import { BitchatPacket, getPacketCanonicalRoot, toHex } from '../protocol/BitchatPacket';
 import { BinaryProtocol } from '../protocol/BinaryProtocol';
 import { BitchatDevice } from './BitchatDevice';
 import { EnvironmentManager, calculateLineAttenuationStats } from './environment';
 import { SeededRandom } from './SeededRandom';
 import { RadioMedium } from './RadioMedium';
+
+const wifiWireSizeCache = new WeakMap<BitchatPacket, number>();
+
+function getWifiWireBytes(packet: BitchatPacket): number {
+    const root = getPacketCanonicalRoot(packet);
+    const cached = wifiWireSizeCache.get(root);
+    if (cached !== undefined) return cached;
+    const encoded = BinaryProtocol.encode(packet, { padding: false });
+    const bytes = encoded ? encoded.length : packet.payload.length + 22;
+    wifiWireSizeCache.set(root, bytes);
+    return bytes;
+}
 
 /**
  * Wi-Fi Aware (NAN + IPv6 TCP) link model aligned with BitChat Android's
@@ -58,6 +70,7 @@ interface PendingTcpSend {
 
 interface TcpDirectionQueue {
     items: PendingTcpSend[];
+    head: number;
     pendingBytes: number;
     inFlight: boolean;
 }
@@ -69,8 +82,13 @@ export class BitchatConnectionWifiAware extends BitchatConnection {
     environment: EnvironmentManager | null = null;
     radioMedium: RadioMedium | null = null;
 
-    private dirAtoB: TcpDirectionQueue = { items: [], pendingBytes: 0, inFlight: false };
-    private dirBtoA: TcpDirectionQueue = { items: [], pendingBytes: 0, inFlight: false };
+    private dirAtoB: TcpDirectionQueue = { items: [], head: 0, pendingBytes: 0, inFlight: false };
+    private dirBtoA: TcpDirectionQueue = { items: [], head: 0, pendingBytes: 0, inFlight: false };
+    private cachedPosAX: number = NaN;
+    private cachedPosAY: number = NaN;
+    private cachedPosBX: number = NaN;
+    private cachedPosBY: number = NaN;
+    private cachedBuildingCount: number = -1;
 
     constructor(
         endpointA: BitchatDevice,
@@ -119,12 +137,30 @@ export class BitchatConnectionWifiAware extends BitchatConnection {
     }
 
     updateRSSI(): boolean {
-        if (!this.endpointA.position || !this.endpointB.position) return true;
-        this.rssi = BitchatConnectionWifiAware.estimateRSSI(
-            this.endpointA.position,
-            this.endpointB.position,
-            this.environment
-        );
+        const posA = this.endpointA.position;
+        const posB = this.endpointB.position;
+        if (!posA || !posB) return true;
+
+        const bCount = this.environment ? this.environment.getBuildingCount() : 0;
+        const movedASq =
+            (posA.x - this.cachedPosAX) * (posA.x - this.cachedPosAX) +
+            (posA.y - this.cachedPosAY) * (posA.y - this.cachedPosAY);
+        const movedBSq =
+            (posB.x - this.cachedPosBX) * (posB.x - this.cachedPosBX) +
+            (posB.y - this.cachedPosBY) * (posB.y - this.cachedPosBY);
+
+        if (
+            this.cachedBuildingCount !== bCount ||
+            movedASq >= 0.5625 ||
+            movedBSq >= 0.5625
+        ) {
+            this.rssi = BitchatConnectionWifiAware.estimateRSSI(posA, posB, this.environment);
+            this.cachedPosAX = posA.x;
+            this.cachedPosAY = posA.y;
+            this.cachedPosBX = posB.x;
+            this.cachedPosBY = posB.y;
+            this.cachedBuildingCount = bCount;
+        }
         return this.rssi > WIFI_AWARE_CONFIG.DISCONNECT_THRESHOLD;
     }
 
@@ -132,13 +168,12 @@ export class BitchatConnectionWifiAware extends BitchatConnection {
         if (!this.isActive || !this.isReady) return false;
 
         const now = nowMs ?? this.clock();
-        const encoded = BinaryProtocol.encode(packet, { padding: false });
-        const wireBytes = encoded ? encoded.length : packet.payload.length + 22;
+        const wireBytes = getWifiWireBytes(packet);
 
         if (this.scheduler) {
             const queue = from === this.endpointA ? this.dirAtoB : this.dirBtoA;
             if (
-                queue.items.length >= WIFI_AWARE_CONFIG.MAX_PENDING_SENDS ||
+                queue.items.length - queue.head >= WIFI_AWARE_CONFIG.MAX_PENDING_SENDS ||
                 queue.pendingBytes + wireBytes > WIFI_AWARE_CONFIG.MAX_PENDING_BYTES
             ) {
                 this.packetsDropped++;
@@ -169,7 +204,7 @@ export class BitchatConnectionWifiAware extends BitchatConnection {
             queue.inFlight = false;
             return;
         }
-        const head = queue.items[0];
+        const head = queue.items[queue.head];
         if (!head) {
             queue.inFlight = false;
             return;
@@ -206,7 +241,7 @@ export class BitchatConnectionWifiAware extends BitchatConnection {
         this.onPacketSent?.(head.packet, head.from);
 
         const target = this.getOtherParty(head.from);
-        this.scheduler.scheduleAt(
+        this.scheduler.scheduleAtFast(
             window.endMs,
             fireNow => {
                 if (!this.isActive) {
@@ -241,23 +276,36 @@ export class BitchatConnectionWifiAware extends BitchatConnection {
                 if (failed) {
                     head.retries++;
                     if (head.retries <= WIFI_AWARE_CONFIG.MAX_TCP_RETRIES) {
-                        this.scheduler?.scheduleIn(
+                        this.scheduler?.scheduleInFast(
                             WIFI_AWARE_CONFIG.TCP_RETRY_DELAY_MS,
-                            retryNow => this.startNextTcpOp(queue, retryNow),
-                            `wifi-retry:${this.linkID}`
+                            retryNow => this.startNextTcpOp(queue, retryNow)
                         );
                         return;
                     }
                     this.packetsDropped++;
                     this.telemetry?.recordDrop('rf_per');
-                    queue.items.shift();
+                    queue.head++;
+                    if (queue.head >= queue.items.length) {
+                        queue.items.length = 0;
+                        queue.head = 0;
+                    } else if (queue.head > 64 && queue.head * 2 >= queue.items.length) {
+                        queue.items = queue.items.slice(queue.head);
+                        queue.head = 0;
+                    }
                     queue.pendingBytes = Math.max(0, queue.pendingBytes - head.wireBytes);
                     queue.inFlight = false;
                     this.startNextTcpOp(queue, fireNow);
                     return;
                 }
 
-                queue.items.shift();
+                queue.head++;
+                if (queue.head >= queue.items.length) {
+                    queue.items.length = 0;
+                    queue.head = 0;
+                } else if (queue.head > 64 && queue.head * 2 >= queue.items.length) {
+                    queue.items = queue.items.slice(queue.head);
+                    queue.head = 0;
+                }
                 queue.pendingBytes = Math.max(0, queue.pendingBytes - head.wireBytes);
                 this.packetsReceived++;
                 this.lastActivityAtMs = fireNow;
@@ -267,17 +315,18 @@ export class BitchatConnectionWifiAware extends BitchatConnection {
 
                 target.receivePacket(head.packet, head.from, this);
                 this.startNextTcpOp(queue, fireNow);
-            },
-            `wifi-rx:${this.linkID}`
+            }
         );
     }
 
     override close(): void {
         super.close();
         this.dirAtoB.items.length = 0;
+        this.dirAtoB.head = 0;
         this.dirAtoB.pendingBytes = 0;
         this.dirAtoB.inFlight = false;
         this.dirBtoA.items.length = 0;
+        this.dirBtoA.head = 0;
         this.dirBtoA.pendingBytes = 0;
         this.dirBtoA.inFlight = false;
     }

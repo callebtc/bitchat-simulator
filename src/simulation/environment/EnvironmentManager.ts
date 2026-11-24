@@ -1,6 +1,8 @@
 /**
  * EnvironmentManager
  * Stores and queries building polygons for the simulation environment.
+ * Uses a 2D uniform spatial grid (25 m cells) with stamp-based deduplication
+ * for O(1) point-in-building and line-of-sight candidate queries at 1000+ users.
  */
 
 import {
@@ -27,9 +29,23 @@ export interface MovementResult {
     velocity?: Point2D;
 }
 
+const BUILDING_CELL_SIZE = 25;
+const GRID_OFFSET = 32768;
+const GRID_STRIDE = 65536;
+
+function packCell(gx: number, gy: number): number {
+    return (gx + GRID_OFFSET) * GRID_STRIDE + (gy + GRID_OFFSET);
+}
+
 export class EnvironmentManager {
     private buildings: Building[] = [];
+    private buildingById: Map<string, Building> = new Map();
     private bounds: EnvironmentBounds | null = null;
+
+    // 2D spatial grid indexing building indices for O(1) spatial queries
+    private grid: Map<number, number[]> = new Map();
+    private queryStamps: Uint32Array = new Uint32Array(0);
+    private currentStamp: number = 0;
 
     /**
      * Load environment from GeoJSON feature collection.
@@ -40,14 +56,13 @@ export class EnvironmentManager {
         centerLat?: number,
         centerLon?: number
     ): void {
-        // Calculate center if not provided
         let minLat = Infinity, maxLat = -Infinity;
         let minLng = Infinity, maxLng = -Infinity;
 
         for (const feature of geojson.features) {
             if (feature.geometry.type !== 'Polygon') continue;
-            
-            const coords = feature.geometry.coordinates[0]; // Outer ring
+
+            const coords = feature.geometry.coordinates[0];
             for (const [lng, lat] of coords) {
                 if (lat < minLat) minLat = lat;
                 if (lat > maxLat) maxLat = lat;
@@ -59,14 +74,13 @@ export class EnvironmentManager {
         const refLat = centerLat ?? (minLat + maxLat) / 2;
         const refLon = centerLon ?? (minLng + maxLng) / 2;
 
-        // Convert all buildings
         this.buildings = [];
         let buildingId = 0;
 
         for (const feature of geojson.features) {
             if (feature.geometry.type !== 'Polygon') continue;
 
-            const coords = feature.geometry.coordinates[0]; // Outer ring only for now
+            const coords = feature.geometry.coordinates[0];
             const vertices: Point2D[] = [];
 
             for (const [lng, lat] of coords) {
@@ -74,7 +88,6 @@ export class EnvironmentManager {
                 vertices.push(local);
             }
 
-            // Remove last vertex if it duplicates first (GeoJSON rings are closed)
             if (vertices.length > 1) {
                 const first = vertices[0];
                 const last = vertices[vertices.length - 1];
@@ -83,7 +96,7 @@ export class EnvironmentManager {
                 }
             }
 
-            if (vertices.length < 3) continue; // Invalid polygon
+            if (vertices.length < 3) continue;
 
             const building: Building = {
                 id: `building-${buildingId++}`,
@@ -96,7 +109,8 @@ export class EnvironmentManager {
             this.buildings.push(building);
         }
 
-        // Calculate local bounds
+        this.rebuildSpatialIndex();
+
         const localBounds = this.calculateTotalBounds();
 
         this.bounds = {
@@ -115,6 +129,7 @@ export class EnvironmentManager {
     loadFromData(data: EnvironmentData): void {
         this.buildings = data.buildings;
         this.bounds = data.bounds;
+        this.rebuildSpatialIndex();
     }
 
     /**
@@ -122,61 +137,135 @@ export class EnvironmentManager {
      */
     clear(): void {
         this.buildings = [];
+        this.buildingById.clear();
+        this.grid.clear();
+        this.queryStamps = new Uint32Array(0);
+        this.currentStamp = 0;
         this.bounds = null;
     }
 
-    /**
-     * Get all buildings.
-     */
+    private rebuildSpatialIndex(): void {
+        this.buildingById.clear();
+        this.grid.clear();
+        this.queryStamps = new Uint32Array(this.buildings.length);
+        this.currentStamp = 0;
+
+        for (let idx = 0; idx < this.buildings.length; idx++) {
+            const b = this.buildings[idx];
+            this.buildingById.set(b.id, b);
+
+            const bb = b.bounds;
+            const minGX = Math.floor(bb.minX / BUILDING_CELL_SIZE);
+            const maxGX = Math.floor(bb.maxX / BUILDING_CELL_SIZE);
+            const minGY = Math.floor(bb.minY / BUILDING_CELL_SIZE);
+            const maxGY = Math.floor(bb.maxY / BUILDING_CELL_SIZE);
+
+            for (let gx = minGX; gx <= maxGX; gx++) {
+                for (let gy = minGY; gy <= maxGY; gy++) {
+                    const key = packCell(gx, gy);
+                    let list = this.grid.get(key);
+                    if (!list) {
+                        list = [];
+                        this.grid.set(key, list);
+                    }
+                    list.push(idx);
+                }
+            }
+        }
+    }
+
+    private nextStamp(): number {
+        this.currentStamp++;
+        if (this.currentStamp >= 0xfffffffe) {
+            this.queryStamps.fill(0);
+            this.currentStamp = 1;
+        }
+        return this.currentStamp;
+    }
+
     getBuildings(): Building[] {
         return this.buildings;
     }
 
-    /**
-     * Get environment bounds.
-     */
+    getBuildingById(id: string): Building | undefined {
+        return this.buildingById.get(id);
+    }
+
     getBounds(): EnvironmentBounds | null {
         return this.bounds;
     }
 
     /**
-     * Get buildings that might intersect a line from A to B.
-     * Uses bounding box pre-filtering for efficiency.
+     * Get buildings whose bounding boxes overlap the segment A -> B.
+     * Uses O(cells) 2D grid traversal with zero Set allocations.
      */
     getBuildingsInPath(a: Point2D, b: Point2D): Building[] {
-        // Calculate line bounding box
-        const lineMinX = Math.min(a.x, b.x);
-        const lineMaxX = Math.max(a.x, b.x);
-        const lineMinY = Math.min(a.y, b.y);
-        const lineMaxY = Math.max(a.y, b.y);
+        if (this.buildings.length === 0) return [];
 
-        // Filter buildings by bounding box overlap
-        return this.buildings.filter(building => {
-            const bb = building.bounds;
-            return !(
-                bb.maxX < lineMinX ||
-                bb.minX > lineMaxX ||
-                bb.maxY < lineMinY ||
-                bb.minY > lineMaxY
-            );
-        });
+        const lineMinX = a.x < b.x ? a.x : b.x;
+        const lineMaxX = a.x > b.x ? a.x : b.x;
+        const lineMinY = a.y < b.y ? a.y : b.y;
+        const lineMaxY = a.y > b.y ? a.y : b.y;
+
+        const minGX = Math.floor(lineMinX / BUILDING_CELL_SIZE);
+        const maxGX = Math.floor(lineMaxX / BUILDING_CELL_SIZE);
+        const minGY = Math.floor(lineMinY / BUILDING_CELL_SIZE);
+        const maxGY = Math.floor(lineMaxY / BUILDING_CELL_SIZE);
+
+        const stamp = this.nextStamp();
+        const stamps = this.queryStamps;
+        const buildings = this.buildings;
+        const result: Building[] = [];
+
+        for (let gx = minGX; gx <= maxGX; gx++) {
+            for (let gy = minGY; gy <= maxGY; gy++) {
+                const cell = this.grid.get(packCell(gx, gy));
+                if (!cell) continue;
+
+                for (let i = 0; i < cell.length; i++) {
+                    const idx = cell[i];
+                    if (stamps[idx] === stamp) continue;
+                    stamps[idx] = stamp;
+
+                    const building = buildings[idx];
+                    const bb = building.bounds;
+                    if (
+                        bb.maxX >= lineMinX &&
+                        bb.minX <= lineMaxX &&
+                        bb.maxY >= lineMinY &&
+                        bb.minY <= lineMaxY
+                    ) {
+                        result.push(building);
+                    }
+                }
+            }
+        }
+
+        return result;
     }
 
     /**
-     * Check if a point is inside any building.
+     * Check if a point is inside any building (O(1) grid cell lookup).
      */
     isInsideBuilding(point: Point2D): Building | null {
-        for (const building of this.buildings) {
-            // Quick bounding box check
+        if (this.buildings.length === 0) return null;
+
+        const gx = Math.floor(point.x / BUILDING_CELL_SIZE);
+        const gy = Math.floor(point.y / BUILDING_CELL_SIZE);
+        const cell = this.grid.get(packCell(gx, gy));
+        if (!cell) return null;
+
+        for (let i = 0; i < cell.length; i++) {
+            const building = this.buildings[cell[i]];
             const bb = building.bounds;
             if (
-                point.x < bb.minX || point.x > bb.maxX ||
-                point.y < bb.minY || point.y > bb.maxY
+                point.x < bb.minX ||
+                point.x > bb.maxX ||
+                point.y < bb.minY ||
+                point.y > bb.maxY
             ) {
                 continue;
             }
-
-            // Point-in-polygon test
             if (this.pointInPolygon(point, building.vertices)) {
                 return building;
             }
@@ -187,103 +276,78 @@ export class EnvironmentManager {
     /**
      * Resolve movement from one point to another, handling building collisions.
      * If the path intersects a building, the movement slides along the wall.
-     * 
-     * @param from - Starting position
-     * @param to - Desired ending position
-     * @param maxIterations - Maximum slide iterations to prevent infinite loops
-     * @returns The resolved position and whether movement was blocked
      */
     resolveMovement(from: Point2D, to: Point2D, maxIterations: number = 3): MovementResult {
-        // No buildings = no collision
         if (this.buildings.length === 0) {
             return { position: to, blocked: false };
         }
 
-        let currentPos = { ...from };
-        let targetPos = { ...to };
+        let curX = from.x;
+        let curY = from.y;
+        let tgtX = to.x;
+        let tgtY = to.y;
         let blocked = false;
-        
-        // Small offset to prevent getting stuck on walls
         const EPSILON = 0.01;
 
         for (let iteration = 0; iteration < maxIterations; iteration++) {
-            // Get buildings that might be in the path
+            const currentPos: Point2D = { x: curX, y: curY };
+            const targetPos: Point2D = { x: tgtX, y: tgtY };
             const candidates = this.getBuildingsInPath(currentPos, targetPos);
-            
+
             if (candidates.length === 0) {
-                // No buildings in path, move freely
                 return { position: targetPos, blocked };
             }
 
-            // Find first intersection
             const collision = getFirstIntersection(currentPos, targetPos, candidates);
-
             if (!collision) {
-                // No actual collision, move freely
                 return { position: targetPos, blocked };
             }
 
             blocked = true;
 
-            // Move to just before the collision point
-            // Normal points outward from the building, so we add it to stay outside
-            const collisionPoint: Point2D = {
-                x: collision.point.x + collision.normal.x * EPSILON,
-                y: collision.point.y + collision.normal.y * EPSILON,
-            };
-
-            // Calculate remaining movement vector
+            const colX = collision.point.x + collision.normal.x * EPSILON;
+            const colY = collision.point.y + collision.normal.y * EPSILON;
             const remainingVec: Point2D = {
-                x: targetPos.x - collision.point.x,
-                y: targetPos.y - collision.point.y,
+                x: tgtX - collision.point.x,
+                y: tgtY - collision.point.y,
             };
 
-            // Project remaining movement onto the wall (slide)
             const slideVec = projectOntoSurface(remainingVec, collision.normal);
-
-            // Calculate new target position after sliding
-            const slideTarget: Point2D = {
-                x: collisionPoint.x + slideVec.x,
-                y: collisionPoint.y + slideVec.y,
-            };
-
-            // If slide movement is negligible, stop here
-            const slideDist = Math.sqrt(slideVec.x * slideVec.x + slideVec.y * slideVec.y);
-            if (slideDist < EPSILON) {
-                return { 
-                    position: collisionPoint, 
+            const slideDistSq = slideVec.x * slideVec.x + slideVec.y * slideVec.y;
+            if (slideDistSq < EPSILON * EPSILON) {
+                return {
+                    position: { x: colX, y: colY },
                     blocked: true,
                     velocity: { x: 0, y: 0 },
                 };
             }
 
-            // Update for next iteration (check if slide path also hits something)
-            currentPos = collisionPoint;
-            targetPos = slideTarget;
+            curX = colX;
+            curY = colY;
+            tgtX = colX + slideVec.x;
+            tgtY = colY + slideVec.y;
         }
 
-        // Max iterations reached, return current position
-        return { 
-            position: currentPos, 
+        return {
+            position: { x: curX, y: curY },
             blocked: true,
             velocity: { x: 0, y: 0 },
         };
     }
 
-    /**
-     * Ray casting point-in-polygon test.
-     */
     private pointInPolygon(point: Point2D, vertices: Point2D[]): boolean {
         let inside = false;
         const n = vertices.length;
+        const px = point.x;
+        const py = point.y;
 
         for (let i = 0, j = n - 1; i < n; j = i++) {
             const vi = vertices[i];
             const vj = vertices[j];
 
             if (
-                ((vi.y > point.y) !== (vj.y > point.y)) &&
-                (point.x < (vj.x - vi.x) * (point.y - vi.y) / (vj.y - vi.y) + vi.x)
+                vi.y > py !== vj.y > py &&
+                px < ((vj.x - vi.x) * (py - vi.y)) / (vj.y - vi.y) + vi.x
             ) {
                 inside = !inside;
             }
@@ -292,9 +356,6 @@ export class EnvironmentManager {
         return inside;
     }
 
-    /**
-     * Calculate total bounding box of all buildings.
-     */
     private calculateTotalBounds(): BoundingBox {
         if (this.buildings.length === 0) {
             return { minX: -100, minY: -100, maxX: 100, maxY: 100 };
@@ -313,16 +374,10 @@ export class EnvironmentManager {
         return { minX, minY, maxX, maxY };
     }
 
-    /**
-     * Get building count.
-     */
     getBuildingCount(): number {
         return this.buildings.length;
     }
 
-    /**
-     * Export as serializable data.
-     */
     exportData(): EnvironmentData | null {
         if (!this.bounds) return null;
         return {

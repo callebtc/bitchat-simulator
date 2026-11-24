@@ -1,6 +1,7 @@
 import {
     BitchatPacket,
     MessageType,
+    clonePacketWithTtl,
     computePacketIdBytes,
     computePacketIdHex,
     isBroadcastRecipient,
@@ -82,9 +83,9 @@ export class GossipSyncManager {
             const idBytes = computePacketIdBytes(packet);
             this.announcements.set(senderHex, {
                 senderHex,
-                packet: { ...packet },
+                packet: clonePacketWithTtl(packet, packet.ttl),
                 idBytes,
-                idHex: toHex(idBytes),
+                idHex: computePacketIdHex(packet),
                 timestampMs: tsMs,
                 cachedAtMs: nowMs,
             });
@@ -93,12 +94,12 @@ export class GossipSyncManager {
 
         if (packet.type === MessageType.MESSAGE && isBroadcastRecipient(packet.recipientID)) {
             const idBytes = computePacketIdBytes(packet);
-            const idHex = toHex(idBytes);
+            const idHex = computePacketIdHex(packet);
             if (this.messages.has(idHex)) return;
 
             this.messages.set(idHex, {
                 senderHex,
-                packet: { ...packet },
+                packet: clonePacketWithTtl(packet, packet.ttl),
                 idBytes,
                 idHex,
                 timestampMs: Number(packet.timestamp),
@@ -195,7 +196,7 @@ export class GossipSyncManager {
         );
         for (const ann of announces) {
             if (!GCSFilter.contains(peerSet, req.p, req.m, ann.idBytes)) {
-                missingAnnounces.push({ ...ann.packet, ttl: 0 });
+                missingAnnounces.push(clonePacketWithTtl(ann.packet, 0));
                 announcedSendersSent.add(ann.senderHex);
             }
         }
@@ -210,10 +211,10 @@ export class GossipSyncManager {
                 // ensure the receiver has the signing key even on a GCS false positive for the announce.
                 const senderAnn = this.announcements.get(msg.senderHex);
                 if (senderAnn && !announcedSendersSent.has(msg.senderHex)) {
-                    missingAnnounces.push({ ...senderAnn.packet, ttl: 0 });
+                    missingAnnounces.push(clonePacketWithTtl(senderAnn.packet, 0));
                     announcedSendersSent.add(msg.senderHex);
                 }
-                missingMessages.push({ ...msg.packet, ttl: 0 });
+                missingMessages.push(clonePacketWithTtl(msg.packet, 0));
             }
         }
 

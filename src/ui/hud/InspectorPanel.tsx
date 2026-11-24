@@ -160,10 +160,10 @@ export const InspectorPanel: React.FC = () => {
     const engine = useSimulation();
     const [, forceUpdate] = useState(0);
 
-    // Force update loop for live data
+    // Force update loop for live data (4 Hz)
     useEffect(() => {
         if (!selectedId) return;
-        const interval = setInterval(() => forceUpdate(n => n + 1), 100); 
+        const interval = setInterval(() => forceUpdate(n => n + 1), 250);
         return () => clearInterval(interval);
     }, [selectedId]);
 
@@ -175,9 +175,17 @@ export const InspectorPanel: React.FC = () => {
         if (!person) return null;
 
         const device = person.device;
-        const conns = device.connectionManager.getConnectedPeers();
+        const activeConns = device.connectionManager.getActiveConnections();
         const sim = device.appSimulator as BitchatAppSimulator | undefined;
         const knownPeers = sim?.peerManager.getAllPeers() || [];
+        // Render direct peers first and cap DOM list to 50 rows so selecting a node in a 2,000+ crowd stays instant
+        const MAX_DISPLAYED_PEERS = 50;
+        const displayedPeers =
+            knownPeers.length <= MAX_DISPLAYED_PEERS
+                ? knownPeers
+                : [...knownPeers]
+                      .sort((a, b) => (a.isDirect === b.isDirect ? b.lastSeen - a.lastSeen : a.isDirect ? -1 : 1))
+                      .slice(0, MAX_DISPLAYED_PEERS);
 
         return (
             <PanelWrapper title={device.nickname} subtitle={device.peerIDHex} onClose={() => select(null, null)} height={bottomPanelHeight}>
@@ -401,7 +409,7 @@ export const InspectorPanel: React.FC = () => {
                  {/* Known Peers */}
                  <CollapsibleSection title={`PEER LIST (${knownPeers.length})`} accentColor="text-orange-600" persistenceKey="inspector_peer_list">
                      <div className="space-y-1">
-                        {knownPeers.map(p => (
+                        {displayedPeers.map(p => (
                             <ListItem
                                 key={p.id}
                                 title={p.nickname}
@@ -418,31 +426,32 @@ export const InspectorPanel: React.FC = () => {
                                             {p.id.substring(0, 8)}
                                         </span>
                                         <span className="text-[9px] text-gray-600">
-                                            {((Date.now() - p.lastSeen)/1000).toFixed(0)}s
+                                            {Math.max(0, (engine.simTimeMs - p.lastSeen) / 1000).toFixed(0)}s
                                         </span>
                                     </div>
                                 }
                             />
                         ))}
+                        {knownPeers.length > MAX_DISPLAYED_PEERS && (
+                            <div className="text-[9px] text-gray-500 text-center py-1">
+                                +{knownPeers.length - MAX_DISPLAYED_PEERS} more peers in mesh
+                            </div>
+                        )}
                         {knownPeers.length === 0 && <div className="text-[10px] text-gray-600 italic text-center py-2">Network is empty</div>}
                     </div>
                 </CollapsibleSection>
 
                 {/* Active Connections */}
-                <CollapsibleSection title={`CONNECTIONS (${conns.length})`} accentColor="text-green-600" persistenceKey="inspector_node_connections">
+                <CollapsibleSection title={`CONNECTIONS (${activeConns.length})`} accentColor="text-green-600" persistenceKey="inspector_node_connections">
                     <div className="space-y-1">
-                        {conns.map(p => {
-                            // Find the connection to get RSSI
-                            const allConns = engine.getAllConnections();
-                            const conn = allConns.find(c => 
-                                c.involves(device) && c.involves(p)
-                            );
+                        {activeConns.map(conn => {
+                            const p = conn.getOtherParty(device);
                             const rssi = conn instanceof BitchatConnectionBLE ? conn.rssi : null;
                             const rssiColor = rssi !== null ? getRssiColor(rssi) : 'text-gray-500';
                             
                             return (
                                 <ListItem
-                                    key={p.peerIDHex}
+                                    key={conn.id}
                                     title={p.nickname}
                                     color={getPeerColor(p.peerIDHex)}
                                     onMouseEnter={() => setHighlightedId(p.peerIDHex)}
@@ -460,7 +469,7 @@ export const InspectorPanel: React.FC = () => {
                                 />
                             );
                         })}
-                        {conns.length === 0 && <div className="text-[10px] text-gray-600 italic text-center py-2">No active physical links</div>}
+                        {activeConns.length === 0 && <div className="text-[10px] text-gray-600 italic text-center py-2">No active physical links</div>}
                     </div>
                 </CollapsibleSection>
 
@@ -482,8 +491,7 @@ export const InspectorPanel: React.FC = () => {
 
     // --- CONNECTION INSPECTOR ---
     if (selectionType === 'connection') {
-        const conns = engine.getAllConnections();
-        const conn = conns.find(c => c.id === selectedId);
+        const conn = engine.getConnectionById(selectedId);
         
         if (!conn) return null;
         

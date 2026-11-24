@@ -190,7 +190,7 @@ export class BitchatPerson {
 
         // CASE 1: Indoors - limit search to the specific building bounds
         if (this.busyBuildingId) {
-            const building = this.environment.getBuildings().find(b => b.id === this.busyBuildingId);
+            const building = this.environment.getBuildingById(this.busyBuildingId);
             if (!building) {
                 // Building disappeared? Fallback to outdoors
                 this.busyBuildingId = null;

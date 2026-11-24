@@ -28,6 +28,7 @@ export class EventScheduler {
     private nextId: number = 1;
     private nextSeq: number = 1;
     private currentTimeMs: number = 0;
+    private liveCount: number = 0;
 
     now(): number {
         return this.currentTimeMs;
@@ -44,7 +45,7 @@ export class EventScheduler {
         callback: (nowMs: number) => void,
         tag?: string
     ): ScheduledEventHandle {
-        const clampedFireAt = Math.max(this.currentTimeMs, fireAtMs);
+        const clampedFireAt = fireAtMs > this.currentTimeMs ? fireAtMs : this.currentTimeMs;
         const node: ScheduledNode = {
             id: this.nextId++,
             seq: this.nextSeq++,
@@ -54,6 +55,7 @@ export class EventScheduler {
             tag,
         };
         this.byId.set(node.id, node);
+        this.liveCount++;
         this.push(node);
         return { id: node.id, fireAtMs: clampedFireAt, tag };
     }
@@ -63,15 +65,37 @@ export class EventScheduler {
         callback: (nowMs: number) => void,
         tag?: string
     ): ScheduledEventHandle {
-        return this.scheduleAt(this.currentTimeMs + Math.max(0, delayMs), callback, tag);
+        return this.scheduleAt(this.currentTimeMs + (delayMs > 0 ? delayMs : 0), callback, tag);
+    }
+
+    /**
+     * Zero-Map-overhead scheduling for high-frequency uncancellable events
+     * (GATT TX completion, retries, Wi-Fi RX). Avoids handle & Map churn.
+     */
+    scheduleAtFast(fireAtMs: number, callback: (nowMs: number) => void): void {
+        const clampedFireAt = fireAtMs > this.currentTimeMs ? fireAtMs : this.currentTimeMs;
+        const node: ScheduledNode = {
+            id: 0,
+            seq: this.nextSeq++,
+            fireAtMs: clampedFireAt,
+            callback,
+            cancelled: false,
+        };
+        this.liveCount++;
+        this.push(node);
+    }
+
+    scheduleInFast(delayMs: number, callback: (nowMs: number) => void): void {
+        this.scheduleAtFast(this.currentTimeMs + (delayMs > 0 ? delayMs : 0), callback);
     }
 
     cancel(handle: ScheduledEventHandle | null | undefined): boolean {
-        if (!handle) return false;
+        if (!handle || handle.id === 0) return false;
         const node = this.byId.get(handle.id);
         if (!node || node.cancelled) return false;
         node.cancelled = true;
         this.byId.delete(handle.id);
+        this.liveCount--;
         return true;
     }
 
@@ -92,7 +116,10 @@ export class EventScheduler {
                 break;
             }
             this.pop();
-            this.byId.delete(top.id);
+            if (top.id !== 0) {
+                this.byId.delete(top.id);
+            }
+            this.liveCount--;
             if (top.fireAtMs > this.currentTimeMs) {
                 this.currentTimeMs = top.fireAtMs;
             }
@@ -105,13 +132,54 @@ export class EventScheduler {
         return fired;
     }
 
+    /**
+     * Wall-clock-budgeted variant of `drainUntil` used by the interactive
+     * browser loop so massive 100k+ pkt/s flood storms never freeze rendering.
+     * Checks `nowWallFn()` every 64 events for near-zero overhead.
+     */
+    drainUntilBudgeted(
+        targetTimeMs: number,
+        deadlineWallMs: number,
+        nowWallFn: () => number
+    ): { fired: number; completed: boolean } {
+        let fired = 0;
+        while (this.heap.length > 0) {
+            if ((fired & 63) === 63 && nowWallFn() >= deadlineWallMs) {
+                return { fired, completed: false };
+            }
+            const top = this.heap[0];
+            if (top.cancelled) {
+                this.pop();
+                continue;
+            }
+            if (top.fireAtMs > targetTimeMs) {
+                break;
+            }
+            this.pop();
+            if (top.id !== 0) {
+                this.byId.delete(top.id);
+            }
+            this.liveCount--;
+            if (top.fireAtMs > this.currentTimeMs) {
+                this.currentTimeMs = top.fireAtMs;
+            }
+            top.callback(this.currentTimeMs);
+            fired++;
+        }
+        if (targetTimeMs > this.currentTimeMs) {
+            this.currentTimeMs = targetTimeMs;
+        }
+        return { fired, completed: true };
+    }
+
     pendingCount(): number {
-        return this.byId.size;
+        return this.liveCount;
     }
 
     clear(resetTimeMs: number = 0): void {
         this.heap = [];
         this.byId.clear();
+        this.liveCount = 0;
         this.currentTimeMs = resetTimeMs;
     }
 

@@ -86,45 +86,49 @@ export class MeshGraph {
         maxIntermediateHops: number = Number.POSITIVE_INFINITY
     ): string[] | null {
         if (start === end) return [start];
+        if (!this.announcements.has(start) || !this.announcements.has(end)) return null;
 
-        const adj = new Map<string, string[]>();
-        const confirmedEdges = this.getConfirmedEdges();
-
-        for (const { a, b } of confirmedEdges) {
-            if (!adj.has(a)) adj.set(a, []);
-            if (!adj.has(b)) adj.set(b, []);
-            adj.get(a)!.push(b);
-            adj.get(b)!.push(a);
-        }
-
+        // Direct on-the-fly BFS over bidirectionally confirmed edges (avoids O(V*d) full-graph rebuild)
+        const maxEdges =
+            Number.isFinite(maxIntermediateHops) ? maxIntermediateHops + 1 : Number.POSITIVE_INFINITY;
         const queue: string[] = [start];
+        const depth: number[] = [0];
+        let head = 0;
         const visited = new Set<string>([start]);
         const parent = new Map<string, string>();
 
-        while (queue.length > 0) {
-            const current = queue.shift()!;
+        while (head < queue.length) {
+            const current = queue[head];
+            const currDepth = depth[head];
+            head++;
 
-            if (current === end) {
-                const path: string[] = [end];
-                let curr = end;
-                while (curr !== start) {
-                    curr = parent.get(curr)!;
-                    path.unshift(curr);
-                }
-                const intermediateHops = Math.max(0, path.length - 2);
-                if (intermediateHops > maxIntermediateHops) {
-                    return null;
-                }
-                return path;
-            }
+            if (currDepth >= maxEdges) continue;
 
-            const neighbors = adj.get(current) || [];
+            const neighbors = this.announcements.get(current);
+            if (!neighbors) continue;
+
             for (const neighbor of neighbors) {
-                if (!visited.has(neighbor)) {
-                    visited.add(neighbor);
-                    parent.set(neighbor, current);
-                    queue.push(neighbor);
+                if (visited.has(neighbor)) continue;
+                // Edge (current, neighbor) is confirmed iff neighbor also announces current
+                const reverse = this.announcements.get(neighbor);
+                if (!reverse || !reverse.has(current)) continue;
+
+                visited.add(neighbor);
+                parent.set(neighbor, current);
+
+                if (neighbor === end) {
+                    const path: string[] = [end];
+                    let curr = end;
+                    while (curr !== start) {
+                        curr = parent.get(curr)!;
+                        path.push(curr);
+                    }
+                    path.reverse();
+                    return path;
                 }
+
+                queue.push(neighbor);
+                depth.push(currDepth + 1);
             }
         }
 
