@@ -68,6 +68,17 @@ export class SeededRandom {
         return hex;
     }
 
+    /** Fisher-Yates in-place deterministic shuffle. */
+    shuffle<T>(items: T[]): T[] {
+        for (let i = items.length - 1; i > 0; i--) {
+            const j = Math.floor(this.next() * (i + 1));
+            const tmp = items[i];
+            items[i] = items[j];
+            items[j] = tmp;
+        }
+        return items;
+    }
+
     /**
      * Derives an independent deterministic child PRNG stream from this seed
      * and a label without advancing this generator's state.

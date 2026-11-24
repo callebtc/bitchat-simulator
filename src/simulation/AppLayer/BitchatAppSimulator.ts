@@ -8,6 +8,7 @@ import { FRAGMENT_CONFIG, FragmentManager } from './FragmentManager';
 import { GossipSyncManager } from './GossipSyncManager';
 import { NoisePayloadType, NoiseSessionManager } from './NoiseSessionManager';
 import { MessageRouter } from './MessageRouter';
+import { TransportBridge } from '../TransportBridge';
 import {
     MeshPolicy,
     MeshPolicyPreset,
@@ -48,6 +49,7 @@ export class BitchatAppSimulator implements DeviceTickable {
     gossipSync: GossipSyncManager;
     noiseManager: NoiseSessionManager;
     messageRouter: MessageRouter;
+    transportBridge: TransportBridge;
     policy: MeshPolicy;
     messages: ChatMessage[] = [];
     /** IDs of outgoing private DMs confirmed by a Noise DELIVERED ACK. */
@@ -67,6 +69,9 @@ export class BitchatAppSimulator implements DeviceTickable {
     /** Peers for which initial 1 s post-connect gossip sync has already been scheduled. */
     private initialSyncScheduledPeers: Set<string> = new Set();
 
+    /** Pending coalesced announce-on-connect timer (avoids N-link boot announce storm). */
+    private pendingConnectAnnounce: ScheduledEventHandle | null = null;
+    private lastConnectAnnounceSentAtMs: number = -10_000;
     /** Pending jittered relays keyed by packetId so duplicates can cancel them (iOS policy). */
     private scheduledRelays: Map<string, ScheduledEventHandle> = new Map();
 
@@ -95,6 +100,7 @@ export class BitchatAppSimulator implements DeviceTickable {
         this.gossipSync = new GossipSyncManager();
         this.noiseManager = new NoiseSessionManager(device.peerIDHex);
         this.messageRouter = new MessageRouter();
+        this.transportBridge = new TransportBridge();
 
         // Dynamic direct-link lookup matching Android BluetoothMeshService.kt:181
         this.peerManager.isPeerDirectlyConnected = (peerID: string) =>
@@ -138,11 +144,17 @@ export class BitchatAppSimulator implements DeviceTickable {
 
     /**
      * Called by SimulationEngine when a physical link becomes ready.
-     * Matches Android BluetoothMeshService.onDeviceConnected (+200ms client / +1200ms server).
+     * Matches Android BluetoothMeshService.onDeviceConnected (+200ms client / +1200ms server),
+     * coalesced per device so simultaneous multi-link handshakes do not flood duplicate announces.
      */
     onConnectionEstablished(connection: BitchatConnection, nowMs: number): void {
         this.currentNowMs = nowMs;
         if (!this.isAnnouncing) return;
+
+        // Avoid redundant full-mesh announce flood if we just announced within the last 1.5 s
+        if (nowMs - this.lastConnectAnnounceSentAtMs < 1_500) {
+            return;
+        }
 
         const isClient = connection.initiator === this.device;
         const delayMs = isClient
@@ -150,16 +162,26 @@ export class BitchatAppSimulator implements DeviceTickable {
             : this.policy.announceOnConnectServerDelayMs;
 
         if (this.runtime?.scheduler) {
-            this.runtime.scheduler.scheduleIn(
+            // Coalesce overlapping connect-announce timers on the same device
+            if (this.pendingConnectAnnounce) {
+                return;
+            }
+            this.pendingConnectAnnounce = this.runtime.scheduler.scheduleIn(
                 delayMs,
                 fireNow => {
-                    if (connection.isActive && this.isAnnouncing) {
+                    this.pendingConnectAnnounce = null;
+                    if (
+                        this.isAnnouncing &&
+                        this.device.connectionManager.getActiveConnections().length > 0
+                    ) {
+                        this.lastConnectAnnounceSentAtMs = fireNow;
                         this.sendAnnounce(fireNow);
                     }
                 },
                 `announce-on-connect:${this.device.peerIDHex}`
             );
         } else {
+            this.lastConnectAnnounceSentAtMs = nowMs;
             this.sendAnnounce(nowMs);
         }
     }
@@ -225,6 +247,7 @@ export class BitchatAppSimulator implements DeviceTickable {
             this.lastPeerCleanupTime = now;
             this.peerManager.cleanupStalePeers(now, this.policy.stalePeerTimeoutMs);
             this.securityManager.cleanup(now, this.policy);
+            this.transportBridge.cleanup(now);
         }
         if (now - this.lastFragmentCleanupTime >= FRAGMENT_CONFIG.CLEANUP_INTERVAL_MS) {
             this.lastFragmentCleanupTime = now;
@@ -307,6 +330,13 @@ export class BitchatAppSimulator implements DeviceTickable {
     }
 
     sendAnnounce(nowMs: number = this.now()): void {
+        // Keep periodic announce timer synchronized whenever an event-driven announce fires
+        const hasDirectLinks = this.device.connectionManager.getActiveConnections().length > 0;
+        const baseInterval = this.getAnnounceIntervalMs(hasDirectLinks);
+        const jitter = (this.device.rng.next() - 0.5) * 0.4; // ±20%
+        this.lastAnnounceTime = nowMs;
+        this.currentAnnounceDelay = baseInterval * (1 + jitter);
+
         // Collect up to 10 verified direct neighbors (Android BluetoothMeshService.kt:1334-1349)
         const directNeighborHexes = this.getDirectNeighborHexesForGossip();
         const neighborBytes = directNeighborHexes.map(hex => hexToBytes(hex, 8));
@@ -607,8 +637,15 @@ export class BitchatAppSimulator implements DeviceTickable {
             );
         }
 
-        // Fragment any outbound packet exceeding 512 B MTU (FragmentingPacketSender.kt: 20 ms pacing)
-        const frames = this.fragmentManager.createFragments(packet, this.device.rng);
+        // Fragment outbound packets exceeding 512 B BLE MTU, unless unicasting directly over Wi-Fi Aware
+        const unicastTargetHex = firstHopHex ?? (recipientIdHex && this.policy.useDirectRecipientShortcut ? recipientIdHex : undefined);
+        const bypassBleFragmentation =
+            unicastTargetHex !== undefined &&
+            this.device.connectionManager.hasActiveConnectionToPeer(unicastTargetHex, 'WIFI_AWARE');
+
+        const frames = bypassBleFragmentation
+            ? [packet]
+            : this.fragmentManager.createFragments(packet, this.device.rng);
         if (frames.length === 0) return packet;
 
         const sendFrame = (frame: BitchatPacket, fireNow: number): void => {
@@ -1049,17 +1086,21 @@ export class BitchatAppSimulator implements DeviceTickable {
 
         // DirectLinkAnnouncementPolicy: direct observation ONLY when ttl === maxTtl
         const isDirectTtl = packet.ttl === this.policy.maxTtl;
+        const wasVerifiedDirect = this.peerManager.getVerifiedDirectPeerIDs().includes(senderHex);
         if (isDirectTtl && ingressConnection) {
             this.linkPeerBindings.set(ingressConnection.linkID, senderHex);
-            // Schedule initial peer gossip sync 1 s after direct peer binding (GossipSyncManager.kt)
+            // Schedule initial peer gossip sync 1 s (+ small jitter) after direct peer binding
             if (
                 this.isSyncEnabled &&
                 this.runtime?.scheduler &&
                 !this.initialSyncScheduledPeers.has(senderHex)
             ) {
                 this.initialSyncScheduledPeers.add(senderHex);
+                const staggerMs =
+                    this.gossipSync.config.initialPeerSyncDelayMs +
+                    Math.floor(this.device.rng.next() * 400);
                 this.runtime.scheduler.scheduleIn(
-                    this.gossipSync.config.initialPeerSyncDelayMs,
+                    staggerMs,
                     fireNow => {
                         if (this.hasBoundDirectLink(senderHex) && this.isSyncEnabled) {
                             this.sendSyncRequest(senderHex, fireNow);
@@ -1099,6 +1140,29 @@ export class BitchatAppSimulator implements DeviceTickable {
             }
         );
 
+        // If a newly verified direct neighbor just appeared, schedule one debounced announce
+        // so our updated DIRECT_NEIGHBORS TLV (0x04) propagates for bidirectional MeshGraph edges.
+        if (isDirect && !wasVerifiedDirect && this.isAnnouncing && this.runtime?.scheduler) {
+            if (!this.pendingConnectAnnounce) {
+                const sinceLast = nowMs - this.lastConnectAnnounceSentAtMs;
+                const delayMs = Math.max(300, 1_200 - sinceLast);
+                this.pendingConnectAnnounce = this.runtime.scheduler.scheduleIn(
+                    delayMs,
+                    fireNow => {
+                        this.pendingConnectAnnounce = null;
+                        if (
+                            this.isAnnouncing &&
+                            this.device.connectionManager.getActiveConnections().length > 0
+                        ) {
+                            this.lastConnectAnnounceSentAtMs = fireNow;
+                            this.sendAnnounce(fireNow);
+                        }
+                    },
+                    `announce-neighbor-update:${this.device.peerIDHex}`
+                );
+            }
+        }
+
         this.runtime?.telemetry.recordMessageDelivered(
             packetId,
             this.device.peerIDHex,
@@ -1136,6 +1200,19 @@ export class BitchatAppSimulator implements DeviceTickable {
             if (!ingressConnection && ingressDevice && conn.getOtherParty(this.device) === ingressDevice) {
                 continue;
             }
+            // Cross-transport bridging guard (Android TransportBridgeService.kt: 4096-entry / 5-min dedup)
+            if (
+                ingressConnection &&
+                conn.transportType !== ingressConnection.transportType &&
+                !this.transportBridge.shouldBridge(
+                    packet,
+                    ingressConnection.transportType,
+                    conn.transportType,
+                    nowMs
+                )
+            ) {
+                continue;
+            }
             if (conn.send(packet, this.device, nowMs)) {
                 accepted = true;
             }
@@ -1159,8 +1236,12 @@ export class BitchatAppSimulator implements DeviceTickable {
 
         if (matching.length === 0) return false;
 
-        // Android prefers server-side notification links; iOS prefers client/peripheral write links
+        // UnifiedMeshService: prefer high-throughput Wi-Fi Aware first; among BLE links,
+        // Android prefers server notification links while iOS prefers client write links.
         matching.sort((a, b) => {
+            const aWifi = a.transportType === 'WIFI_AWARE' ? 0 : 1;
+            const bWifi = b.transportType === 'WIFI_AWARE' ? 0 : 1;
+            if (aWifi !== bWifi) return aWifi - bWifi;
             const aIsServer = a.initiator !== this.device ? 0 : 1;
             const bIsServer = b.initiator !== this.device ? 0 : 1;
             return this.policy.preferServerLinkForUnicast

@@ -113,12 +113,14 @@ export class RadioMedium {
     }
 
     /**
-     * Compute realistic BLE GATT airtime in milliseconds for a given wire frame size.
+     * Compute on-air BLE 1M PHY transmission duration in milliseconds (excludes
+     * per-link connection-interval wait, which is interleaved across links by the
+     * BLE controller rather than blocking the shared radio).
      */
     computeBleAirtimeMs(wireBytes: number): number {
-        const serializationMs = (wireBytes * 8 * 1000) / this.config.bleEffectiveBitrateBps;
-        // BLE connection interval + GATT packet serialization
-        return Math.max(2, this.config.bleConnectionIntervalMs + serializationMs);
+        // BLE 1M PHY (~1 Mbps raw, ~400 kbps effective with L2CAP/ATT/IFS overhead)
+        const onAirMs = 1.5 + (wireBytes * 8 * 1000) / Math.max(this.config.bleEffectiveBitrateBps, 400_000);
+        return Math.max(1.5, onAirMs);
     }
 
     /**
@@ -252,20 +254,28 @@ export class RadioMedium {
 }
 
 /**
- * Smooth SINR -> Packet Error Rate mapping.
- * - For BLE 1M GFSK: ~10 dB SINR is the knee (~1e-4 BER); below 6 dB PER climbs rapidly.
- * - For 5 GHz Wi-Fi Aware: ~12 dB SINR knee (higher modulation order).
+ * Physics-grounded SINR -> Packet Error Rate mapping using the standard
+ * non-coherent GFSK / coded-OFDM exponential Eb/N0 waterfall curve:
+ *   BER = 0.5 * exp(-alpha * 10^(sinrDb / 10))
+ *
+ * - BLE 1M GFSK (alpha = 0.55): clean (<0.1% PER) above ~14 dB SINR,
+ *   rapid waterfall between 9–13 dB, ~100% loss under strong co-channel interference (<8 dB).
+ * - 5 GHz Wi-Fi Aware MCS0 with 1/2-rate FEC coding gain (alpha = 0.85):
+ *   clean above ~11.5 dB SINR (supports full 120–150 m open-air range),
+ *   rapid waterfall below ~8 dB SINR.
  */
 export function computePacketErrorRate(
     sinrDb: number,
     wireBytes: number,
     band: RadioBand
 ): number {
-    const thresholdDb = band === '5GHz' ? 11 : 8;
-    // Logistic BER curve from 0.5 (very low SINR) down to ~1e-6 (high SINR)
-    const ber = 0.5 / (1 + Math.exp((sinrDb - thresholdDb) * 1.15));
+    if (sinrDb <= -10) return 1;
+    const linearSinr = Math.pow(10, sinrDb / 10);
+    const alpha = band === '5GHz' ? 0.85 : 0.55;
+    const exponent = -alpha * linearSinr;
+    if (exponent < -40) return 0; // BER < 2e-18
+    const ber = 0.5 * Math.exp(exponent);
     const bits = Math.max(8, wireBytes * 8);
-    // PER = 1 - (1 - ber)^bits, clamped to [0, 1]
     if (ber * bits < 1e-6) return 0;
     if (ber >= 0.5) return 1;
     const per = 1 - Math.pow(1 - ber, bits);

@@ -336,7 +336,8 @@ export function selectFanoutLinks(params: {
         candidates = collapsed;
     }
 
-    // 3. Optional deterministic ~log2(n) broadcast fanout subsetting (iOS BLEFanoutSelector)
+    // 3. Optional deterministic ~log2(n) broadcast fanout subsetting (iOS BLEFanoutSelector.swift:78-89)
+    // Subsets client (peripheral-write) links and server (central-notify) links separately, matching iOS.
     const shouldSubset =
         policy.useFanoutSubsetting &&
         !isDirected &&
@@ -348,15 +349,22 @@ export function selectFanoutLinks(params: {
         return candidates;
     }
 
-    const k = iosSubsetSize(candidates.length);
-    if (k >= candidates.length) return candidates;
+    const subsetBucket = (bucket: BitchatConnection[]): BitchatConnection[] => {
+        const k = iosSubsetSize(bucket.length);
+        if (k >= bucket.length) return bucket;
+        const scored = bucket.map(conn => ({
+            conn,
+            score: hashString32(`${packetId}::${conn.linkID}`),
+        }));
+        scored.sort((a, b) =>
+            a.score !== b.score ? a.score - b.score : a.conn.linkID.localeCompare(b.conn.linkID)
+        );
+        return scored.slice(0, k).map(s => s.conn);
+    };
 
-    const scored = candidates.map(conn => ({
-        conn,
-        score: hashString32(`${packetId}::${conn.linkID}`),
-    }));
-    scored.sort((a, b) => (a.score !== b.score ? a.score - b.score : a.conn.linkID.localeCompare(b.conn.linkID)));
-    return scored.slice(0, k).map(s => s.conn);
+    const clientBucket = candidates.filter(c => c.initiator.peerIDHex === ownerPeerId);
+    const serverBucket = candidates.filter(c => c.initiator.peerIDHex !== ownerPeerId);
+    return [...subsetBucket(clientBucket), ...subsetBucket(serverBucket)];
 }
 
 export function iosSubsetSize(count: number): number {

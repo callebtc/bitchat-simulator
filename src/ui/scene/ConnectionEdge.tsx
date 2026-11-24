@@ -5,6 +5,7 @@ import { useSimulation } from '../context/SimulationContext';
 import * as THREE from 'three';
 import { BitchatConnection } from '../../simulation/BitchatConnection';
 import { BitchatConnectionBLE, RSSI_CONFIG } from '../../simulation/BitchatConnectionBLE';
+import { BitchatConnectionWifiAware } from '../../simulation/BitchatConnectionWifiAware';
 import { useSelection } from '../context/SelectionContext';
 import { useVisualization } from '../context/VisualizationContext';
 import { MessageType } from '../../protocol/BitchatPacket';
@@ -132,7 +133,22 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
             let colorObj = new THREE.Color();
             let baseColor = 0xffffff;
             if (p.type === MessageType.ANNOUNCE) baseColor = 0x00ffff;
-            if (p.type === MessageType.MESSAGE) baseColor = 0x00ff00;
+            else if (p.type === MessageType.MESSAGE) baseColor = 0x00ff00;
+            else if (
+                p.type === MessageType.NOISE_HANDSHAKE ||
+                p.type === MessageType.NOISE_ENCRYPTED
+            ) {
+                baseColor = 0xe879f9; // Fuchsia (Noise XX / encrypted DM)
+            } else if (
+                p.type === MessageType.FRAGMENT ||
+                p.type === MessageType.FILE_TRANSFER
+            ) {
+                baseColor = 0xf97316; // Orange (Fragmented file/media)
+            } else if (p.type === MessageType.VOICE_FRAME) {
+                baseColor = 0xf43f5e; // Rose (Live PTT voice)
+            } else if (p.type === MessageType.REQUEST_SYNC) {
+                baseColor = 0x38bdf8; // Sky (GCS gossip sync)
+            }
             
             // Source Routing Override
             if (p.route && p.route.length > 0) {
@@ -324,7 +340,8 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
         );
     } else {
         // --- STANDARD / MUTED VIEW ---
-        let lineColor: THREE.Color | string = 'green';
+        const isWifiAware = connection instanceof BitchatConnectionWifiAware;
+        let lineColor: THREE.Color | string = isWifiAware ? '#a855f7' : 'green';
         if (isHighlighted) {
             lineColor = 'yellow';
         } else if (!isDimmed && connection instanceof BitchatConnectionBLE) {
@@ -338,8 +355,12 @@ export const ConnectionEdge: React.FC<ConnectionEdgeProps> = ({ connection }) =>
                     points={initialPoints}
                     color={lineColor}
                     transparent
-                    opacity={isDimmed ? 0.1 : (isHighlighted ? 0.8 : 0.6)}
-                    lineWidth={isHighlighted ? 3 : 1.5}
+                    opacity={isDimmed ? 0.1 : (isHighlighted ? 0.85 : (isWifiAware ? 0.75 : 0.6))}
+                    lineWidth={isHighlighted ? 3 : (isWifiAware ? 2.2 : 1.5)}
+                    dashed={isWifiAware}
+                    dashScale={isWifiAware ? 1 : undefined}
+                    dashSize={isWifiAware ? 4 : undefined}
+                    gapSize={isWifiAware ? 2 : undefined}
                 />
                 
                 <line 

@@ -239,14 +239,16 @@ export class BitchatConnectionBLE extends BitchatConnection {
 
         queue.inFlight = true;
         const medium = this.radioMedium;
-        const airtimeMs = medium
+        const onAirMs = medium
             ? medium.computeBleAirtimeMs(head.wireBytes)
-            : 15 + (head.wireBytes * 8 * 1000) / 250_000;
+            : 1.5 + (head.wireBytes * 8 * 1000) / 400_000;
+        const connIntervalWaitMs = medium ? medium.config.bleConnectionIntervalMs : 15;
 
-        // Reserve per-device shared BLE radio airtime
+        // Reserve per-device shared BLE radio ONLY for actual on-air TX duration;
+        // per-link connection-interval wait is interleaved across links by the BLE controller.
         const window = medium
-            ? medium.reserveDeviceRadio(head.from.peerIDHex, '2.4GHz', nowMs, airtimeMs)
-            : { startMs: nowMs, endMs: nowMs + airtimeMs };
+            ? medium.reserveDeviceRadio(head.from.peerIDHex, '2.4GHz', nowMs, onAirMs)
+            : { startMs: nowMs, endMs: nowMs + onAirMs };
 
         const channel = this.rng ? this.rng.nextInt(0, 36) : 0;
         const txPos = head.from.position ?? { x: 0, y: 0 };
@@ -273,7 +275,7 @@ export class BitchatConnectionBLE extends BitchatConnection {
         }
 
         this.scheduler.scheduleAt(
-            window.endMs,
+            window.endMs + connIntervalWaitMs,
             doneMs => {
                 if (!this.isActive) {
                     queue.inFlight = false;

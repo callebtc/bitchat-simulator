@@ -2,18 +2,31 @@ import { SimulationEngine } from './SimulationEngine';
 import { BitchatDevice } from './BitchatDevice';
 import { BitchatPerson, MovementMode } from './BitchatPerson';
 import { BitchatAppSimulator } from './AppLayer/BitchatAppSimulator';
+import { MeshPolicyPreset } from './AppLayer/MeshPolicy';
 
 let nextSpawnSeq = 1;
 
-export function setupDemo(engine: SimulationEngine, count: number = 5): void {
+export interface AddNodeOptions {
+    center?: { x: number; y: number };
+    initialMode?: MovementMode;
+    policyPreset?: MeshPolicyPreset;
+    wifiAwareEnabled?: boolean;
+}
+
+export function setupDemo(
+    engine: SimulationEngine,
+    count: number = 5,
+    options?: Pick<AddNodeOptions, 'policyPreset' | 'wifiAwareEnabled'>
+): void {
     engine.reset();
     nextSpawnSeq = 1;
 
     for (let i = 0; i < count; i++) {
         const d = BitchatDevice.createRandom(engine.rng);
         d.nickname = `User-${d.peerIDHex.substring(0, 4)}`;
+        d.wifiAwareEnabled = options?.wifiAwareEnabled ?? false;
 
-        const sim = new BitchatAppSimulator(d);
+        const sim = new BitchatAppSimulator(d, options?.policyPreset ?? 'android');
         d.setAppSimulator(sim);
 
         const p = new BitchatPerson(
@@ -30,15 +43,11 @@ export function setupDemo(engine: SimulationEngine, count: number = 5): void {
     }
 }
 
-export interface AddNodeOptions {
-    center?: { x: number; y: number };
-    initialMode?: MovementMode;
-}
-
 export function addRandomNode(engine: SimulationEngine, options?: AddNodeOptions): BitchatPerson {
     const d = BitchatDevice.createRandom(engine.rng);
     d.nickname = `User-${d.peerIDHex.substring(0, 4)}`;
-    const sim = new BitchatAppSimulator(d);
+    d.wifiAwareEnabled = options?.wifiAwareEnabled ?? false;
+    const sim = new BitchatAppSimulator(d, options?.policyPreset ?? 'android');
     d.setAppSimulator(sim);
 
     const cx = options?.center?.x ?? 0;

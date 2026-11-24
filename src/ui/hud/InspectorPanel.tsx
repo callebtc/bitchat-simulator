@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useSelection } from '../context/SelectionContext';
 import { useSimulation } from '../context/SimulationContext';
 import { BitchatAppSimulator } from '../../simulation/AppLayer/BitchatAppSimulator';
+import { MeshPolicyPreset } from '../../simulation/AppLayer/MeshPolicy';
 import { MovementMode } from '../../simulation/BitchatPerson';
 import { getPeerColor } from '../../utils/colorUtils';
 import { PowerMode } from '../../simulation/BitchatDevice';
@@ -288,6 +289,61 @@ export const InspectorPanel: React.FC = () => {
                             </div>
                         } 
                     />
+                    <div className="mt-2" />
+                    <DataRow
+                        label="Mesh Policy"
+                        value={
+                            <select
+                                value={sim?.policy.preset ?? 'android'}
+                                onChange={(e) => sim?.setPolicy(e.target.value as MeshPolicyPreset)}
+                                className="bg-gray-800/50 border border-gray-700 rounded px-1 py-0.5 text-[10px] w-24 text-center focus:outline-none focus:border-cyan-500 uppercase"
+                            >
+                                <option value="android">ANDROID</option>
+                                <option value="ios">IOS</option>
+                            </select>
+                        }
+                    />
+                    <div className="mt-2" />
+                    <DataRow
+                        label="Wi-Fi Aware"
+                        value={
+                            <button
+                                className={`text-[10px] px-2 py-0.5 rounded border transition-all ${
+                                    device.wifiAwareEnabled
+                                        ? 'bg-purple-500/20 border-purple-500/60 text-purple-300 hover:bg-purple-500/30'
+                                        : 'bg-gray-800/50 border-gray-700 text-gray-400 hover:bg-gray-700/50'
+                                }`}
+                                onClick={() => {
+                                    device.wifiAwareEnabled = !device.wifiAwareEnabled;
+                                    forceUpdate(n => n + 1);
+                                }}
+                            >
+                                {device.wifiAwareEnabled ? '5GHz ON' : 'OFF'}
+                            </button>
+                        }
+                    />
+                    {sim && (
+                        <div className="mt-2 pt-2 border-t border-gray-800/70 grid grid-cols-3 gap-1 text-center">
+                            <div className="bg-gray-900/50 rounded p-1 border border-gray-800">
+                                <div className="text-[8px] text-gray-500">SYNC</div>
+                                <div className="text-[10px] text-sky-400">
+                                    {sim.gossipSync.getCachedMessageCount()}
+                                </div>
+                            </div>
+                            <div className="bg-gray-900/50 rounded p-1 border border-gray-800">
+                                <div className="text-[8px] text-gray-500">OUTBOX</div>
+                                <div className="text-[10px] text-fuchsia-400">
+                                    {sim.messageRouter.getOutboxCount()}
+                                </div>
+                            </div>
+                            <div className="bg-gray-900/50 rounded p-1 border border-gray-800">
+                                <div className="text-[8px] text-gray-500">BRIDGED</div>
+                                <div className="text-[10px] text-purple-400">
+                                    {sim.transportBridge.bridgedCount}
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </CollapsibleSection>
 
                 {/* BLE Configuration - Compact */}
