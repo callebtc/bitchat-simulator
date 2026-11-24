@@ -62,6 +62,17 @@ function decodeAnnounceCached(payload: Uint8Array): DecodedAnnounceCacheEntry {
     return entry;
 }
 
+/** Resend a DM if no DELIVERED ACK arrives within this window. */
+const DM_ACK_TIMEOUT_MS = 8_000;
+/** Total sends (original + resends) before a DM is abandoned. */
+const DM_MAX_SEND_ATTEMPTS = 4;
+/** How long ciphertext waits for an in-flight msg3 before being discarded. */
+const PENDING_DECRYPT_TTL_MS = 10_000;
+const PENDING_DECRYPT_MAX_PER_PEER = 16;
+const RECOVERY_HANDSHAKE_COOLDOWN_MS = 5_000;
+/** Fallback suppression window when the policy defines none (matches iOS 60 s). */
+const SOURCE_ROUTE_FAILURE_SUPPRESS_MS = 60_000;
+
 export interface ChatMessage {
     id: string;
     timestamp: number;
@@ -85,6 +96,28 @@ export class BitchatAppSimulator implements DeviceTickable {
     messages: ChatMessage[] = [];
     /** IDs of outgoing private DMs confirmed by a Noise DELIVERED ACK. */
     deliveredMessageIds: Set<string> = new Set();
+
+    /**
+     * Outgoing PRIVATE_MESSAGEs sent over an established session but not yet
+     * confirmed by a DELIVERED ACK. Resent on timeout; see `sweepUnackedDms`.
+     */
+    private awaitingAck: Map<
+        string,
+        { recipientHex: string; body: Uint8Array; lastSentAtMs: number; attempts: number; queued: boolean }
+    > = new Map();
+    /**
+     * NOISE_ENCRYPTED frames that arrived while we were the responder waiting
+     * for msg3 of the same handshake (multi-hop relay jitter can reorder msg3
+     * and the first transport message). Replayed once the session completes.
+     */
+    private pendingDecrypt: Map<
+        string,
+        Array<{ packet: BitchatPacket; hops: number; transport: string; receivedAtMs: number }>
+    > = new Map();
+    /** Inbound DM ids already shown, so ACK-driven resends are not duplicated. */
+    private receivedDmIds: Set<string> = new Set();
+    /** Cooldown for handshakes we start because a peer sent undecryptable traffic. */
+    private recoveryHandshakeAt: Map<string, number> = new Map();
 
     private lastAnnounceTime: number = -1;
     private currentAnnounceDelay: number = 0;
@@ -143,6 +176,7 @@ export class BitchatAppSimulator implements DeviceTickable {
             this.gossipSync.removeAnnouncementForPeer(peerID);
             this.noiseManager.removeSession(peerID);
             this.messageRouter.clearPeerRetryState(peerID);
+            this.pendingDecrypt.delete(peerID);
             this.initialSyncScheduledPeers.delete(peerID);
             this.clearRouteConfirmation(peerID);
         };
@@ -301,6 +335,7 @@ export class BitchatAppSimulator implements DeviceTickable {
                 this.initiateNoiseHandshake(peerHex, now, true);
             }
         }
+        this.sweepUnackedDms(now);
 
         // 3. Periodic Gossip Sync (REQUEST_SYNC, ttl=0, every 30 s when connected)
         const hasDirectLinks = this.device.connectionManager.getActiveConnections().length > 0;
@@ -532,13 +567,62 @@ export class BitchatAppSimulator implements DeviceTickable {
         }
     }
 
+    /**
+     * Delivery-ACK driven resend for private DMs (both upstream clients track
+     * DELIVERED receipts for DMs and retry sends that never confirm).
+     *  - 1st timeout on a live session: resend over the same session.
+     *  - Repeated timeouts, or no session: assume the peer lost its session,
+     *    re-key with a fresh Noise XX handshake and queue the DM in the outbox.
+     *  - After DM_MAX_SEND_ATTEMPTS sends: give up (telemetry `dm_unacked`).
+     * Also expires ciphertext held for handshakes that never completed.
+     */
+    private sweepUnackedDms(nowMs: number): void {
+        for (const [peerHex, queue] of this.pendingDecrypt) {
+            const kept = queue.filter(q => nowMs - q.receivedAtMs < PENDING_DECRYPT_TTL_MS);
+            if (kept.length === 0) this.pendingDecrypt.delete(peerHex);
+            else if (kept.length !== queue.length) this.pendingDecrypt.set(peerHex, kept);
+        }
+
+        if (this.awaitingAck.size === 0) return;
+        for (const [messageId, entry] of this.awaitingAck) {
+            if (entry.queued || nowMs - entry.lastSentAtMs < DM_ACK_TIMEOUT_MS) continue;
+            // No ACK: the route (or the session) failed. Flood the next attempt.
+            this.suppressSourceRoute(entry.recipientHex, nowMs);
+            if (entry.attempts >= DM_MAX_SEND_ATTEMPTS) {
+                this.awaitingAck.delete(messageId);
+                this.runtime?.telemetry.recordDrop('dm_unacked');
+                this.log('DM undelivered after retries', { to: entry.recipientHex.substring(0, 8), id: messageId });
+                continue;
+            }
+            const session = this.noiseManager.getSession(entry.recipientHex);
+            const freshSession =
+                session?.state === 'established' && (session.establishedAtMs ?? 0) > entry.lastSentAtMs;
+            if (session?.state === 'established' && (entry.attempts < 2 || freshSession)) {
+                this.sendNoiseEncrypted(entry.recipientHex, NoisePayloadType.PRIVATE_MESSAGE, messageId, entry.body, nowMs);
+                continue;
+            }
+            entry.queued = true;
+            this.noiseManager.removeSession(entry.recipientHex);
+            this.messageRouter.enqueue({
+                messageId,
+                recipientHex: entry.recipientHex,
+                payloadType: NoisePayloadType.PRIVATE_MESSAGE,
+                body: entry.body,
+                enqueuedAtMs: nowMs,
+            });
+            this.initiateNoiseHandshake(entry.recipientHex, nowMs, true);
+        }
+    }
+
     private initiateNoiseHandshake(
         recipientIdHex: string,
         nowMs: number,
         forceRestart: boolean
     ): void {
+        const isRetry = this.noiseManager.getSession(recipientIdHex)?.state === 'initiator_sent_msg1';
         const msg1 = this.noiseManager.initiateHandshake(recipientIdHex, nowMs, forceRestart);
         if (!msg1) return;
+        if (isRetry) this.suppressSourceRoute(recipientIdHex, nowMs);
         this.messageRouter.recordHandshakeAttempt(recipientIdHex, nowMs);
         this.buildAndOriginatePacket(
             MessageType.NOISE_HANDSHAKE,
@@ -558,6 +642,16 @@ export class BitchatAppSimulator implements DeviceTickable {
         body: Uint8Array,
         nowMs: number
     ): void {
+        if (payloadType === NoisePayloadType.PRIVATE_MESSAGE) {
+            const prev = this.awaitingAck.get(messageId);
+            this.awaitingAck.set(messageId, {
+                recipientHex: recipientIdHex,
+                body,
+                lastSentAtMs: nowMs,
+                attempts: (prev?.attempts ?? 0) + 1,
+                queued: false,
+            });
+        }
         const encryptedPayload = NoiseSessionManager.encodeEncryptedPayload(
             payloadType,
             messageId,
@@ -1003,6 +1097,11 @@ export class BitchatAppSimulator implements DeviceTickable {
         senderHex: string,
         nowMs: number
     ): void {
+        const priorState = this.noiseManager.getSession(senderHex)?.state;
+        if (packet.payload[0] === 1 && priorState === 'responder_sent_msg2') {
+            // Initiator is retrying msg1, so our msg2 never arrived: avoid the same route
+            this.suppressSourceRoute(senderHex, nowMs);
+        }
         const result = this.noiseManager.handleHandshakeMessage(senderHex, packet.payload, nowMs);
         if (result.responsePayload) {
             this.buildAndOriginatePacket(
@@ -1030,6 +1129,15 @@ export class BitchatAppSimulator implements DeviceTickable {
                 }
             };
 
+            // Replay ciphertext that overtook msg3 on its way here
+            const buffered = this.pendingDecrypt.get(senderHex);
+            if (buffered) {
+                this.pendingDecrypt.delete(senderHex);
+                for (const b of buffered) {
+                    this.handleNoiseEncrypted(b.packet, senderHex, nowMs, b.hops, b.transport);
+                }
+            }
+
             // If we just sent msg3 as initiator, pace outbox flush +25ms behind msg3
             if (result.responsePayload && this.runtime?.scheduler) {
                 this.runtime.scheduler.scheduleIn(
@@ -1051,12 +1159,39 @@ export class BitchatAppSimulator implements DeviceTickable {
         transportName: string
     ): void {
         if (!this.noiseManager.hasEstablishedSession(senderHex)) {
+            const session = this.noiseManager.getSession(senderHex);
+            if (session?.state === 'responder_sent_msg2') {
+                // Same handshake, msg3 still in flight: hold the ciphertext
+                let queue = this.pendingDecrypt.get(senderHex);
+                if (!queue) {
+                    queue = [];
+                    this.pendingDecrypt.set(senderHex, queue);
+                }
+                if (queue.length >= PENDING_DECRYPT_MAX_PER_PEER) queue.shift();
+                queue.push({ packet, hops, transport: transportName, receivedAtMs: nowMs });
+                return;
+            }
+            // No session for this ciphertext (peer expired us, or state desynced):
+            // it cannot be decrypted. Re-key so the sender's ACK-timeout resend lands.
+            const last = this.recoveryHandshakeAt.get(senderHex) ?? -Infinity;
+            if (nowMs - last >= RECOVERY_HANDSHAKE_COOLDOWN_MS && session?.state !== 'initiator_sent_msg1') {
+                this.recoveryHandshakeAt.set(senderHex, nowMs);
+                this.log('Undecryptable DM, re-keying Noise session', { from: senderHex.substring(0, 8) });
+                this.initiateNoiseHandshake(senderHex, nowMs, true);
+            }
             return;
         }
         const inner = NoiseSessionManager.decodeEncryptedPayload(packet.payload);
         if (!inner) return;
 
         if (inner.payloadType === NoisePayloadType.PRIVATE_MESSAGE) {
+            if (this.receivedDmIds.has(inner.messageId)) {
+                // Resend of a DM we already have (our ACK was lost): just re-ACK
+                this.sendNoiseEncrypted(senderHex, NoisePayloadType.DELIVERED, inner.messageId, new Uint8Array(0), nowMs);
+                return;
+            }
+            if (this.receivedDmIds.size > 4096) this.receivedDmIds.clear();
+            this.receivedDmIds.add(inner.messageId);
             const text = new TextDecoder().decode(inner.body);
             this.messages.push({
                 id: inner.messageId,
@@ -1082,6 +1217,7 @@ export class BitchatAppSimulator implements DeviceTickable {
                 nowMs
             );
         } else if (inner.payloadType === NoisePayloadType.DELIVERED) {
+            this.awaitingAck.delete(inner.messageId);
             this.deliveredMessageIds.add(inner.messageId);
             this.log('DM DELIVERED ACK received', {
                 from: senderHex.substring(0, 8),
@@ -1349,6 +1485,18 @@ export class BitchatAppSimulator implements DeviceTickable {
             .getConnectedPeers()
             .map(p => p.peerIDHex)
             .slice(0, this.policy.maxNeighborsInAnnounce);
+    }
+
+    /**
+     * Stop source-routing to `peerHex` and flood instead (iOS-style 60 s
+     * suppression). Used when end-to-end evidence (missing DM ACK, stalled
+     * handshake) shows the MeshGraph route is failing, for both presets: a
+     * route through a dead or lossy hop would otherwise be reused on every retry.
+     */
+    private suppressSourceRoute(peerHex: string, nowMs: number): void {
+        const ms = this.policy.sourceRouteSuppressionMs > 0 ? this.policy.sourceRouteSuppressionMs : SOURCE_ROUTE_FAILURE_SUPPRESS_MS;
+        this.clearRouteConfirmation(peerHex);
+        this.suppressedSourceRoutes.set(peerHex, nowMs + ms);
     }
 
     private armRouteConfirmation(recipientHex: string, _nowMs: number): void {
