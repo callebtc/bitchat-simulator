@@ -154,7 +154,15 @@ const PanelWrapper: React.FC<{ children: React.ReactNode; title: string; subtitl
 );
 
 export const InspectorPanel: React.FC = () => {
-    const { selectedId, selectionType, select, setChatRecipientId, setHighlightedId } = useSelection();
+    const {
+        selectedId,
+        selectionType,
+        select,
+        setChatRecipientId,
+        isPickingRecipient,
+        setPickingRecipient,
+        setHighlightedId,
+    } = useSelection();
     const { highlightOwnMesh, setHighlightOwnMesh } = useVisualization();
     const { bottomPanelHeight } = useLayout();
     const engine = useSimulation();
@@ -211,6 +219,20 @@ export const InspectorPanel: React.FC = () => {
                         </select>
                     </div>
                 </div>
+
+                {/* Quick DM / Probe action */}
+                <button
+                    className={`w-full mb-3 px-2 py-1.5 rounded text-[10px] font-bold border transition-all ${
+                        isPickingRecipient
+                            ? 'bg-cyan-600/40 border-cyan-400 text-white animate-pulse'
+                            : 'bg-fuchsia-950/40 hover:bg-fuchsia-900/50 border-fuchsia-700/60 text-fuchsia-200'
+                    }`}
+                    onClick={() => setPickingRecipient(!isPickingRecipient)}
+                >
+                    {isPickingRecipient
+                        ? 'CLICK TARGET NODE ON MAP (ESC)...'
+                        : '⌖ PROBE & DM ANOTHER NODE'}
+                </button>
 
                 {person.mode === MovementMode.TARGET && (
                     <div className="text-[10px] text-yellow-500/80 mb-3 text-center bg-yellow-900/10 py-1 rounded border border-yellow-900/30">

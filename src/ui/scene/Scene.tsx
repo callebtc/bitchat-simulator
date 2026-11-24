@@ -6,6 +6,7 @@ import { InstancedMeshLayer } from './InstancedMeshLayer';
 import { BuildingLayer } from './BuildingLayer';
 import { PathVisualizer } from './PathVisualizer';
 import { RouteVisualizer } from './RouteVisualizer';
+import { ProbeVisualizer } from './ProbeVisualizer';
 import { InteractionPlane } from './InteractionPlane';
 import { ScaleUpdater } from '../hud/ScaleIndicator';
 import * as THREE from 'three';
@@ -19,6 +20,32 @@ const ViewTracker: React.FC = () => {
         viewCenterRef.current.x = camera.position.x;
         viewCenterRef.current.y = camera.position.y;
     });
+
+    return null;
+};
+
+const CameraFocuser: React.FC<{ controlsRef: React.RefObject<any> }> = ({ controlsRef }) => {
+    const { camera } = useThree();
+    const { focusRequest } = useSelection();
+    const lastNonceRef = useRef<number>(0);
+
+    useEffect(() => {
+        if (!focusRequest || focusRequest.nonce === lastNonceRef.current) return;
+        lastNonceRef.current = focusRequest.nonce;
+
+        const ortho = camera as THREE.OrthographicCamera;
+        ortho.position.x = focusRequest.x;
+        ortho.position.y = focusRequest.y;
+        if (focusRequest.zoom !== undefined && Number.isFinite(focusRequest.zoom)) {
+            ortho.zoom = Math.max(0.25, Math.min(8, focusRequest.zoom));
+            ortho.updateProjectionMatrix();
+        }
+        if (controlsRef.current) {
+            controlsRef.current.target.x = focusRequest.x;
+            controlsRef.current.target.y = focusRequest.y;
+            controlsRef.current.update();
+        }
+    }, [camera, controlsRef, focusRequest]);
 
     return null;
 };
@@ -118,6 +145,7 @@ export const Scene: React.FC = () => {
                     }}
                 />
                 <ViewTracker />
+                <CameraFocuser controlsRef={controlsRef} />
                 <KeyboardNavigator controlsRef={controlsRef} />
                 <ScaleUpdater />
 
@@ -130,6 +158,9 @@ export const Scene: React.FC = () => {
 
                 {/* GPU-instanced nodes, connections, and flying packets (5 draw calls total) */}
                 <InstancedMeshLayer />
+
+                {/* Live DM Route Probe & Packet Hop Follower */}
+                <ProbeVisualizer />
 
                 {/* Path visualization for hover/animation */}
                 <PathVisualizer />

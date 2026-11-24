@@ -39,6 +39,7 @@ const _yellowColor = new THREE.Color(0xffff00);
 const _cyanColor = new THREE.Color(0x00ffff);
 const _greyColor = new THREE.Color(0x666666);
 const _wifiColor = new THREE.Color(0xa855f7);
+const _recipientRingColor = new THREE.Color(0xe879f9);
 const _dimColor = new THREE.Color(0x1f2937);
 
 /** Upload only the active [0, count) slice of a dynamic GPU BufferAttribute. */
@@ -129,7 +130,7 @@ function createPacketPool(): FlyingPacketPool {
 
 export const InstancedMeshLayer: React.FC = () => {
     const engine = useSimulation();
-    const { selectedId, selectionType, highlightedId } = useSelection();
+    const { selectedId, selectionType, chatRecipientId, highlightedId } = useSelection();
     const { showAnnouncePackets, highlightOwnMesh } = useVisualization();
 
     const fillMeshRef = useRef<THREE.InstancedMesh>(null);
@@ -346,9 +347,14 @@ export const InstancedMeshLayer: React.FC = () => {
                 const person = people[i];
                 const peerHex = person.device.peerIDHex;
                 const isSelected = selectedId === person.id;
+                const isRecipient = chatRecipientId === peerHex;
                 const isHighlighted = highlightedId === peerHex;
                 const isDimmed =
-                    highlightOwnMesh && isSomethingSelected && !isSelected && !isHighlighted;
+                    highlightOwnMesh &&
+                    isSomethingSelected &&
+                    !isSelected &&
+                    !isRecipient &&
+                    !isHighlighted;
 
                 let kScale = knocks.size > 0 ? knocks.get(peerHex) ?? 1.0 : 1.0;
                 if (kScale > 1.002) {
@@ -361,9 +367,10 @@ export const InstancedMeshLayer: React.FC = () => {
                     }
                 }
 
-                const baseScale = isSelected ? 1.25 : isHighlighted ? 1.15 : 1.0;
+                const baseScale = isSelected || isRecipient ? 1.25 : isHighlighted ? 1.15 : 1.0;
                 const s = baseScale * kScale;
-                const ringScale = (isSelected ? 1.3 : isHighlighted ? 1.2 : 1.0) * kScale;
+                const ringScale =
+                    (isSelected || isRecipient ? 1.32 : isHighlighted ? 1.2 : 1.0) * kScale;
                 const px = person.position.x;
                 const py = person.position.y;
 
@@ -377,7 +384,14 @@ export const InstancedMeshLayer: React.FC = () => {
                     ringMesh.setColorAt(i, _dimColor);
                 } else {
                     fillMesh.setColorAt(i, baseColor);
-                    ringMesh.setColorAt(i, isSelected || isHighlighted ? _whiteColor : _blackColor);
+                    ringMesh.setColorAt(
+                        i,
+                        isRecipient
+                            ? _recipientRingColor
+                            : isSelected || isHighlighted
+                              ? _whiteColor
+                              : _blackColor
+                    );
                 }
             }
 
@@ -614,21 +628,27 @@ export const InstancedMeshLayer: React.FC = () => {
         }
     });
 
-    // Determine which peer labels to render: all when <= 60 peers, else selected + hovered only
+    // Determine which peer labels to render: all when <= 60 peers, else selected + recipient + hovered
     const activeLabelPeople: BitchatPerson[] = [];
+    const labelIdsSeen = new Set<string>();
+    const pushLabel = (p: BitchatPerson | undefined) => {
+        if (!p || labelIdsSeen.has(p.id)) return;
+        labelIdsSeen.add(p.id);
+        activeLabelPeople.push(p);
+    };
     if (labelPeers.length > 0) {
         for (let i = 0; i < labelPeers.length; i++) {
-            const p = engine.getPerson(labelPeers[i]);
-            if (p) activeLabelPeople.push(p);
+            pushLabel(engine.getPerson(labelPeers[i]));
         }
     } else {
         if (selectedId && selectionType === 'node') {
-            const sel = engine.getPerson(selectedId);
-            if (sel) activeLabelPeople.push(sel);
+            pushLabel(engine.getPerson(selectedId));
+        }
+        if (chatRecipientId) {
+            pushLabel(engine.getPersonByPeerId(chatRecipientId));
         }
         if (highlightedId) {
-            const hov = engine.getPersonByPeerId(highlightedId);
-            if (hov && hov.id !== selectedId) activeLabelPeople.push(hov);
+            pushLabel(engine.getPersonByPeerId(highlightedId));
         }
     }
 
@@ -684,38 +704,51 @@ export const InstancedMeshLayer: React.FC = () => {
                 <meshBasicMaterial />
             </instancedMesh>
 
-            {/* Selective Peer Labels (only <= 60 peers or focused/hovered node) */}
-            {activeLabelPeople.map(person => (
-                <NodeLabel
-                    key={person.id}
-                    person={person}
-                    isHighlighted={
-                        highlightedId === person.device.peerIDHex || selectedId === person.id
-                    }
-                />
-            ))}
+            {/* Selective Peer Labels (only <= 60 peers or focused/recipient/hovered node) */}
+            {activeLabelPeople.map(person => {
+                const isSender = selectedId === person.id && selectionType === 'node';
+                const isRecipient = chatRecipientId === person.device.peerIDHex;
+                const roleTag = isSender && chatRecipientId ? 'FROM' : isRecipient ? 'TO' : undefined;
+                return (
+                    <NodeLabel
+                        key={person.id}
+                        person={person}
+                        isHighlighted={
+                            highlightedId === person.device.peerIDHex || isSender || isRecipient
+                        }
+                        roleTag={roleTag}
+                    />
+                );
+            })}
         </group>
     );
 };
 
-const NodeLabel: React.FC<{ person: BitchatPerson; isHighlighted: boolean }> = ({
-    person,
-    isHighlighted,
-}) => {
+const NodeLabel: React.FC<{
+    person: BitchatPerson;
+    isHighlighted: boolean;
+    roleTag?: 'FROM' | 'TO';
+}> = ({ person, isHighlighted, roleTag }) => {
     const groupRef = useRef<THREE.Group>(null);
     useFrame(() => {
         if (!groupRef.current) return;
         groupRef.current.position.set(person.position.x, person.position.y - 6, 2.5);
     });
+    const labelColor =
+        roleTag === 'FROM'
+            ? '#22d3ee'
+            : roleTag === 'TO'
+              ? '#e879f9'
+              : isHighlighted
+                ? '#ffff00'
+                : 'white';
+    const text = roleTag
+        ? `${roleTag}: ${person.device.nickname} (${person.device.peerIDHex.substring(0, 6)})`
+        : person.device.peerIDHex.substring(0, 8);
     return (
         <group ref={groupRef} position={[person.position.x, person.position.y - 6, 2.5]}>
-            <Text
-                fontSize={3}
-                color={isHighlighted ? '#ffff00' : 'white'}
-                anchorX="center"
-                anchorY="top"
-            >
-                {person.device.peerIDHex.substring(0, 8)}
+            <Text fontSize={roleTag ? 3.5 : 3} color={labelColor} anchorX="center" anchorY="top">
+                {text}
             </Text>
         </group>
     );
