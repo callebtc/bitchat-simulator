@@ -39,11 +39,11 @@ interface NominatimResult {
     lon: string;
 }
 
+/** Body of the left rail's Location section (header lives in MainControlPanel). */
 export const EnvironmentSection: React.FC = () => {
     const engine = useSimulation();
     const { requestReset } = useCamera();
     const terrain = useTerrain();
-    const [isExpanded, setIsExpanded] = usePersistedState('env_section_expanded', true);
     const [place, setPlace] = usePersistedState<Place>('env_place', PRESETS[0]);
     const [radius, setRadius] = usePersistedState('env_radius_m', 250);
     const [query, setQuery] = useState('');
@@ -194,26 +194,7 @@ export const EnvironmentSection: React.FC = () => {
     };
 
     return (
-        <div className="border-t border-gray-800 pt-2">
-            <button
-                className="mb-1 flex w-full items-center justify-between text-[10px] text-gray-500 transition-colors hover:text-gray-300"
-                onClick={() => setIsExpanded(!isExpanded)}
-            >
-                <span className="flex items-center gap-2 font-bold uppercase tracking-wider">
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M12 21s-7-6.2-7-11.5A7 7 0 0112 2.5a7 7 0 017 7C19 14.8 12 21 12 21z" />
-                        <circle cx="12" cy="9.5" r="2.5" />
-                    </svg>
-                    Location & Environment
-                    {stats && <span className="font-mono text-sky-400">({stats.count})</span>}
-                </span>
-                <svg width="10" height="6" viewBox="0 0 10 6" fill="none" className={`transition-transform ${isExpanded ? 'rotate-180' : ''}`}>
-                    <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
-            </button>
-
-            {isExpanded && (
-                <div className="space-y-2.5 pt-1">
+        <div className="space-y-2.5">
                     {/* Search */}
                     <form onSubmit={search} className="relative">
                         <input
@@ -396,8 +377,6 @@ export const EnvironmentSection: React.FC = () => {
                             nav cache
                         </button>
                     </div>
-                </div>
-            )}
         </div>
     );
 };

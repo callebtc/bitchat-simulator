@@ -97,7 +97,7 @@ When adding or revising simulated protocol behavior, cite the corresponding upst
     - `camera/CameraRig.tsx` (OrbitControls with zoom-to-cursor, WASD/QE/RF, fly-to, follow/chase/first-person), `interaction/PointerController.tsx` (screen-space picking, 2-click DM targeting, drag-to-carry, right-click walk target), `effects/PostProcessing.tsx` (MSAA HDR → NaN sanitize → bloom → output).
     - `PathVisualizer`, `RouteVisualizer`, `ProbeVisualizer`: route/probe overlays (sim-root space).
   - `overlays/`: DOM overlays pinned to 3D points via `ScreenAnchors` (`PeerLabels`, `ChatBubbles`); one projector writes transforms per frame.
-  - `hud/`: `ViewDock` (compass/scale, camera modes, time of day, building style, quality), `MainControlPanel`, `EnvironmentSection` (place search, presets, radius, OSM stats), `InspectorPanel`, `DevicePhone` (followed device's live BitChat app), `BottomPanel`, `ChatPanel`, `LogPanel`, `LogView`, `Terminal`, `PerformanceStats`.
+  - `hud/`: `primitives.tsx` (shared glass panel, section, segmented, switch, stat, button styles — use these for any new HUD UI), `MainControlPanel` (left rail: status, KPIs, View · Layers · Population · Location · Telemetry), `ViewSection` (compass/scale, camera modes, time of day, building style, quality; `ViewShortcuts` keys 1–4 / H / Esc), `EnvironmentSection` (place search, presets, radius, terrain, OSM stats), `InspectorPanel` (right rail), `DevicePhone` (dockable handset running the selected/followed device's BitChat app), `BottomPanel` (floating console: `LogView` + `ChatPanel`), `PerformanceStats` (`usePerformance` hook).
 - **`src/utils/`** — `colorUtils.ts`, `usePersistedState.ts`.
 
 ## 5. Current Implementation vs. Real BitChat (Known Gaps & Roadmap)

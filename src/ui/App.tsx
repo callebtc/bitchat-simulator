@@ -16,7 +16,7 @@ import { TerrainProvider } from './context/TerrainContext';
 import { MotionProvider } from './context/MotionContext';
 import { PeerLabels } from './overlays/PeerLabels';
 import { ChatBubbles } from './overlays/ChatBubbles';
-import { ViewDock } from './hud/ViewDock';
+import { ViewShortcuts } from './hud/ViewSection';
 import { DevicePhone } from './hud/DevicePhone';
 
 const SimulationController = () => {
@@ -51,7 +51,7 @@ const RecipientPickBanner = () => {
             : null;
 
     return (
-        <div className="fixed top-[92px] left-1/2 -translate-x-1/2 z-30 pointer-events-auto bg-black/90 border border-cyan-500/70 rounded px-3.5 py-2 shadow-2xl font-mono text-xs text-cyan-100 flex items-center gap-3 backdrop-blur-md">
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-auto bg-black/90 border border-cyan-500/70 rounded px-3.5 py-2 shadow-2xl font-mono text-xs text-cyan-100 flex items-center gap-3 backdrop-blur-md">
             <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
             <span>
                 Click any node on the map to DM from{' '}
@@ -97,7 +97,7 @@ const LayoutContent = () => {
                 <Scene />
                 <PeerLabels />
                 <ChatBubbles />
-                <ViewDock />
+                <ViewShortcuts />
                 <RecipientPickBanner />
                 <MainControlPanel />
                 <InspectorPanel />
