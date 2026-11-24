@@ -127,6 +127,16 @@ export class ConnectionManager {
         return false;
     }
     
+    getActiveConnections(): BitchatConnection[] {
+        const active: BitchatConnection[] = [];
+        this.connections.forEach(conn => {
+            if (conn.isActive) {
+                active.push(conn);
+            }
+        });
+        return active;
+    }
+
     getConnectedPeers(): BitchatDevice[] {
         const peers: BitchatDevice[] = [];
         this.connections.forEach(conn => {
