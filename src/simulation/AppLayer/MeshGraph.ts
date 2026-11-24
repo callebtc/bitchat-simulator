@@ -1,39 +1,70 @@
-export class MeshGraph {
-    // Adjacency list: PeerID -> Set of Neighbor PeerIDs
-    // We only store confirmed edges (A->B and B->A) or just raw announcements?
-    // The spec says: "An edge is only then CONFIRMED if it has been reported by both peers"
-    // So we store raw announcements and derive confirmed edges for routing.
-    
-    // PeerID -> Set of announced neighbors
-    private announcements: Map<string, Set<string>> = new Map();
+import { MAX_DIRECT_NEIGHBORS } from '../../protocol/TLV';
 
-    constructor() {}
+/**
+ * Mesh topology graph built from ANNOUNCE neighbor gossip (TLV 0x04),
+ * aligned with Android MeshGraphService.kt & RoutePlanner.kt:
+ * - Enforces timestamp ordering (`prevTs >= timestamp` ignored when supplied).
+ * - Caps neighbor lists at 10 unique direct neighbors (excluding self-loops).
+ * - Removes stale peers and their incident edges cleanly via `removePeer`.
+ * - Computes shortest paths strictly over bidirectionally confirmed edges
+ *   (A announces B AND B announces A), with optional max intermediate hop cap.
+ */
+export class MeshGraph {
+    private announcements: Map<string, Set<string>> = new Map();
+    private lastUpdateTs: Map<string, bigint> = new Map();
 
     /**
      * Update the graph with a new announcement from a peer.
-     * Newer announcements overwrite previous ones completely.
+     * When `timestamp` is provided, older or equal updates are ignored.
      */
-    updateFromAnnouncement(originPeerID: string, neighbors: string[]) {
-        // Filter out self-references
-        const neighborSet = new Set(neighbors.filter(n => n !== originPeerID));
+    updateFromAnnouncement(
+        originPeerID: string,
+        neighbors: string[],
+        timestamp?: bigint,
+        maxNeighbors: number = MAX_DIRECT_NEIGHBORS
+    ): boolean {
+        if (timestamp !== undefined) {
+            const prev = this.lastUpdateTs.get(originPeerID);
+            if (prev !== undefined && prev >= timestamp) {
+                return false;
+            }
+            this.lastUpdateTs.set(originPeerID, timestamp);
+        }
+
+        const neighborSet = new Set<string>();
+        for (const n of neighbors) {
+            if (n === originPeerID) continue;
+            neighborSet.add(n);
+            if (neighborSet.size >= maxNeighbors) break;
+        }
         this.announcements.set(originPeerID, neighborSet);
+        return true;
+    }
+
+    /**
+     * Remove a peer completely from the graph (Android MeshGraphService.removePeer).
+     */
+    removePeer(peerID: string): void {
+        this.announcements.delete(peerID);
+        this.lastUpdateTs.delete(peerID);
+        for (const neighbors of this.announcements.values()) {
+            neighbors.delete(peerID);
+        }
     }
 
     /**
      * Get all confirmed edges in the graph.
      * An edge (A, B) is confirmed if A announces B AND B announces A.
      */
-    getConfirmedEdges(): { a: string, b: string }[] {
-        const edges: { a: string, b: string }[] = [];
+    getConfirmedEdges(): { a: string; b: string }[] {
+        const edges: { a: string; b: string }[] = [];
         const processedPairs = new Set<string>();
 
         for (const [a, neighbors] of this.announcements) {
             for (const b of neighbors) {
-                // Check confirmation
                 const bNeighbors = this.announcements.get(b);
                 if (bNeighbors && bNeighbors.has(a)) {
-                    // Create canonical pair key to avoid duplicates
-                    const pair = [a, b].sort().join(':');
+                    const pair = a < b ? `${a}:${b}` : `${b}:${a}`;
                     if (!processedPairs.has(pair)) {
                         processedPairs.add(pair);
                         edges.push({ a, b });
@@ -45,17 +76,20 @@ export class MeshGraph {
     }
 
     /**
-     * Compute shortest path using Dijkstra's algorithm on CONFIRMED edges only.
-     * Returns full path including start and end: [start, hop1, hop2, ..., end]
-     * Returns null if no path found.
+     * Compute shortest unweighted path using BFS on CONFIRMED edges only.
+     * Returns full path [start, hop1, ..., end], or null if unreachable or
+     * if intermediate hop count exceeds maxIntermediateHops.
      */
-    getShortestPath(start: string, end: string): string[] | null {
+    getShortestPath(
+        start: string,
+        end: string,
+        maxIntermediateHops: number = Number.POSITIVE_INFINITY
+    ): string[] | null {
         if (start === end) return [start];
 
-        // Build adjacency list of confirmed edges for easier traversal
         const adj = new Map<string, string[]>();
         const confirmedEdges = this.getConfirmedEdges();
-        
+
         for (const { a, b } of confirmedEdges) {
             if (!adj.has(a)) adj.set(a, []);
             if (!adj.has(b)) adj.set(b, []);
@@ -63,8 +97,6 @@ export class MeshGraph {
             adj.get(b)!.push(a);
         }
 
-        // Standard BFS (since weights are 1) is sufficient and optimal for unweighted graphs.
-        // Dijkstra is same as BFS for unweighted.
         const queue: string[] = [start];
         const visited = new Set<string>([start]);
         const parent = new Map<string, string>();
@@ -73,12 +105,15 @@ export class MeshGraph {
             const current = queue.shift()!;
 
             if (current === end) {
-                // Reconstruct path
                 const path: string[] = [end];
                 let curr = end;
                 while (curr !== start) {
                     curr = parent.get(curr)!;
                     path.unshift(curr);
+                }
+                const intermediateHops = Math.max(0, path.length - 2);
+                if (intermediateHops > maxIntermediateHops) {
+                    return null;
                 }
                 return path;
             }
@@ -100,7 +135,8 @@ export class MeshGraph {
         return this.announcements.get(origin)?.has(neighbor) ?? false;
     }
 
-    clear() {
+    clear(): void {
         this.announcements.clear();
+        this.lastUpdateTs.clear();
     }
 }

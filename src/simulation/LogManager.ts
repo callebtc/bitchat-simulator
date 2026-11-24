@@ -1,15 +1,17 @@
 export type LogLevel = 'INFO' | 'DEBUG' | 'WARN' | 'ERROR';
 export type LogCategory = 'GLOBAL' | 'PERSON' | 'DEVICE' | 'CONNECTION' | 'PACKET';
 
+export type LogDetails = object | string | number | boolean | null;
+
 export interface LogEntry {
     id: number;
     timestamp: number;
     level: LogLevel;
     category: LogCategory;
-    entityId?: string; // ID of person/device/connection
+    entityId?: string;
     message: string;
-    details?: any; // Structured data
-    color?: string; // Hex color for the entity
+    details?: LogDetails;
+    color?: string;
 }
 
 export class LogManager {
@@ -17,17 +19,29 @@ export class LogManager {
     private listeners: ((log: LogEntry) => void)[] = [];
     private maxLogs: number = 2000;
     private nextId: number = 1;
+    private clock: () => number = () => 0;
 
-    log(level: LogLevel, category: LogCategory, message: string, entityId?: string, details?: any, color?: string) {
+    setClock(clock: () => number): void {
+        this.clock = clock;
+    }
+
+    log(
+        level: LogLevel,
+        category: LogCategory,
+        message: string,
+        entityId?: string,
+        details?: LogDetails,
+        color?: string
+    ): void {
         const entry: LogEntry = {
             id: this.nextId++,
-            timestamp: Date.now(),
+            timestamp: this.clock(),
             level,
             category,
             entityId,
             message,
             details,
-            color
+            color,
         };
 
         this.logs.push(entry);
@@ -36,14 +50,11 @@ export class LogManager {
         }
 
         this.listeners.forEach(l => l(entry));
-        
-        // Console fallback for now, maybe remove later if too noisy
-        // console.log(`[${category}] ${message}`, details || '');
     }
 
-    getLogs(filter?: { entityId?: string, category?: LogCategory }): LogEntry[] {
+    getLogs(filter?: { entityId?: string; category?: LogCategory }): LogEntry[] {
         if (!filter) return this.logs;
-        
+
         return this.logs.filter(log => {
             if (filter.entityId && log.entityId !== filter.entityId) return false;
             if (filter.category && log.category !== filter.category) return false;
@@ -51,9 +62,8 @@ export class LogManager {
         });
     }
 
-    clear() {
+    clear(): void {
         this.logs = [];
-        this.notifyClear();
     }
 
     subscribe(callback: (log: LogEntry) => void): () => void {
@@ -61,9 +71,5 @@ export class LogManager {
         return () => {
             this.listeners = this.listeners.filter(l => l !== callback);
         };
-    }
-    
-    private notifyClear() {
-        // Implement if needed for UI to clear
     }
 }

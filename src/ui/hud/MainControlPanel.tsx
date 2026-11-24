@@ -3,6 +3,8 @@ import { useSimulation } from '../context/SimulationContext';
 import { useSelection } from '../context/SelectionContext';
 import { addRandomNode, setupDemo } from '../../simulation/DemoSetup';
 import { MovementMode } from '../../simulation/BitchatPerson';
+import { BitchatAppSimulator } from '../../simulation/AppLayer/BitchatAppSimulator';
+import { MeshPolicyPreset } from '../../simulation/AppLayer/MeshPolicy';
 import { usePersistedState } from '../../utils/usePersistedState';
 import { EnvironmentSection } from './EnvironmentSection';
 import { useLayout } from '../context/LayoutContext';
@@ -84,7 +86,7 @@ const CollapsibleSection: React.FC<{
                     <path d="M1 1L5 5L9 1" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                 </svg>
             </button>
-            <div className={`overflow-hidden transition-all duration-300 ${isExpanded ? 'max-h-64 opacity-100' : 'max-h-0 opacity-0'}`}>
+            <div className={`overflow-hidden transition-all duration-300 ${isExpanded ? 'max-h-[420px] opacity-100' : 'max-h-0 opacity-0'}`}>
                 <div className="pt-1">
                     {children}
                 </div>
@@ -109,6 +111,8 @@ export const MainControlPanel: React.FC = () => {
     
     // Spawn busy toggle - NOT persisted, defaults to off
     const [spawnBusy, setSpawnBusy] = useState(false);
+    const [fleetPolicy, setFleetPolicy] = useState<MeshPolicyPreset>('android');
+    const [fleetWifiAware, setFleetWifiAware] = useState(false);
     
     // Stats Refs (to avoid re-renders on every packet)
     const statsRef = useRef({
@@ -219,12 +223,34 @@ export const MainControlPanel: React.FC = () => {
     const count1m = timestamps.length; // We prune > 1m so length is correct
     
     const peerCount = engine.getAllPeople().length;
-    const connCount = engine.getAllConnections().length;
-    
+    const allConns = engine.getAllConnections();
+    const connCount = allConns.length;
+    const bleConnCount = allConns.filter(c => c.transportType === 'BLE').length;
+    const wifiConnCount = allConns.filter(c => c.transportType === 'WIFI_AWARE').length;
+    const telemetry = engine.telemetry.getSnapshot(engine.simTimeMs);
+
+    const handleFleetPolicyChange = (preset: MeshPolicyPreset) => {
+        setFleetPolicy(preset);
+        engine.getAllPeople().forEach(person => {
+            const sim = person.device.appSimulator as BitchatAppSimulator | undefined;
+            sim?.setPolicy(preset);
+        });
+    };
+
+    const handleFleetWifiAwareToggle = () => {
+        const next = !fleetWifiAware;
+        setFleetWifiAware(next);
+        engine.getAllPeople().forEach(person => {
+            person.device.wifiAwareEnabled = next;
+        });
+    };
+
     const handleAddNode = () => {
-        addRandomNode(engine, { 
+        addRandomNode(engine, {
             center: viewCenter,
-            initialMode: spawnBusy ? MovementMode.BUSY : undefined
+            initialMode: spawnBusy ? MovementMode.BUSY : undefined,
+            policyPreset: fleetPolicy,
+            wifiAwareEnabled: fleetWifiAware,
         });
     };
     
@@ -279,9 +305,11 @@ export const MainControlPanel: React.FC = () => {
             // Add multiple nodes
             const countToAdd = chargeCountRef.current;
             for (let i = 0; i < countToAdd; i++) {
-                addRandomNode(engine, { 
+                addRandomNode(engine, {
                     center: viewCenter,
-                    initialMode: spawnBusy ? MovementMode.BUSY : undefined
+                    initialMode: spawnBusy ? MovementMode.BUSY : undefined,
+                    policyPreset: fleetPolicy,
+                    wifiAwareEnabled: fleetWifiAware,
                 });
             }
         } else {
@@ -393,7 +421,12 @@ export const MainControlPanel: React.FC = () => {
                     </button>
                     <button 
                         className="flex-1 bg-red-900/20 hover:bg-red-900/40 text-red-300 px-2 py-1.5 rounded text-[10px] font-bold border border-red-900/50 transition-all"
-                        onClick={() => setupDemo(engine, 5)}
+                        onClick={() =>
+                            setupDemo(engine, 5, {
+                                policyPreset: fleetPolicy,
+                                wifiAwareEnabled: fleetWifiAware,
+                            })
+                        }
                     >
                         RESET
                     </button>
@@ -438,6 +471,57 @@ export const MainControlPanel: React.FC = () => {
                             </button>
                         </div>
                         
+                        {/* Fleet Mesh Policy Selector */}
+                        <div className="flex items-center justify-between bg-gray-900/30 px-2 py-1.5 rounded border border-gray-800">
+                            <span className="text-[10px] text-gray-400 uppercase tracking-wider">Fleet Policy</span>
+                            <div className="flex gap-1">
+                                <button
+                                    onClick={() => handleFleetPolicyChange('android')}
+                                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold border transition-colors ${
+                                        fleetPolicy === 'android'
+                                            ? 'bg-green-900/40 border-green-500/60 text-green-300'
+                                            : 'bg-gray-900/50 border-gray-800 text-gray-500 hover:text-gray-300'
+                                    }`}
+                                >
+                                    ANDROID
+                                </button>
+                                <button
+                                    onClick={() => handleFleetPolicyChange('ios')}
+                                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold border transition-colors ${
+                                        fleetPolicy === 'ios'
+                                            ? 'bg-cyan-900/40 border-cyan-500/60 text-cyan-300'
+                                            : 'bg-gray-900/50 border-gray-800 text-gray-500 hover:text-gray-300'
+                                    }`}
+                                >
+                                    IOS
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* Fleet Wi-Fi Aware Toggle */}
+                        <div className="flex items-center justify-between bg-gray-900/30 px-2 py-1.5 rounded border border-gray-800">
+                            <label className="text-[10px] text-gray-400 flex items-center gap-1.5 cursor-pointer select-none">
+                                <span className="uppercase tracking-wider">Wi-Fi Aware</span>
+                                {fleetWifiAware && (
+                                    <span className="text-[8px] text-purple-300 bg-purple-900/40 px-1 py-0.5 rounded">
+                                        5GHz
+                                    </span>
+                                )}
+                            </label>
+                            <button
+                                onClick={handleFleetWifiAwareToggle}
+                                className={`relative w-8 h-4 rounded-full transition-colors ${
+                                    fleetWifiAware ? 'bg-purple-600' : 'bg-gray-700'
+                                }`}
+                            >
+                                <div
+                                    className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
+                                        fleetWifiAware ? 'translate-x-4' : 'translate-x-0.5'
+                                    }`}
+                                />
+                            </button>
+                        </div>
+
                         {/* Turn All Busy */}
                          <button 
                             className="w-full bg-amber-900/20 hover:bg-amber-900/40 text-amber-300 px-2 py-1.5 rounded text-[10px] font-bold border border-amber-900/50 transition-all"
@@ -516,6 +600,53 @@ export const MainControlPanel: React.FC = () => {
                                     <div className="text-[9px] text-gray-600">Total</div>
                                     <div className="text-xs text-white">{statsRef.current.totalPackets}</div>
                                 </div>
+                            </div>
+                        </div>
+
+                        {/* Authoritative Mesh Telemetry */}
+                        <div className="space-y-1.5 border-t border-gray-800 pt-2">
+                            <div className="text-[10px] text-gray-500 uppercase tracking-wider border-b border-gray-800 pb-1">
+                                Mesh Telemetry
+                            </div>
+                            <div className="grid grid-cols-3 gap-1 text-center">
+                                <div className="bg-gray-900/40 rounded p-1 border border-gray-800/70">
+                                    <div className="text-[8px] text-gray-500">DELIV</div>
+                                    <div className="text-[10px] text-green-400">
+                                        {telemetry.originatedByKind.broadcast > 0
+                                            ? `${(telemetry.deliveryRatio.broadcast * 100).toFixed(0)}%`
+                                            : telemetry.originatedByKind.dm > 0
+                                              ? `${(telemetry.deliveryRatio.dm * 100).toFixed(0)}%`
+                                              : '—'}
+                                    </div>
+                                </div>
+                                <div className="bg-gray-900/40 rounded p-1 border border-gray-800/70">
+                                    <div className="text-[8px] text-gray-500">P50/P95</div>
+                                    <div className="text-[10px] text-cyan-300">
+                                        {telemetry.latencyMs.all.count > 0
+                                            ? `${telemetry.latencyMs.all.p50.toFixed(0)}/${telemetry.latencyMs.all.p95.toFixed(0)}`
+                                            : '—'}
+                                    </div>
+                                </div>
+                                <div className="bg-gray-900/40 rounded p-1 border border-gray-800/70">
+                                    <div className="text-[8px] text-gray-500">AMP</div>
+                                    <div className="text-[10px] text-amber-300">
+                                        {telemetry.packetAmplification.toFixed(1)}x
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="flex justify-between text-[9px] text-gray-400 px-0.5">
+                                <span>
+                                    BLE:<span className="text-green-400 ml-0.5">{bleConnCount}</span>
+                                </span>
+                                <span>
+                                    WiFi:<span className="text-purple-400 ml-0.5">{wifiConnCount}</span>
+                                </span>
+                                <span>
+                                    SR:<span className="text-amber-400 ml-0.5">{(telemetry.sourceRouteHitRate * 100).toFixed(0)}%</span>
+                                </span>
+                                <span>
+                                    Dup:<span className="text-gray-300 ml-0.5">{telemetry.drops.duplicate}</span>
+                                </span>
                             </div>
                         </div>
 

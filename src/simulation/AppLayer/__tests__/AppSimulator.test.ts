@@ -21,9 +21,8 @@ describe('BitchatAppSimulator', () => {
         d1.connectionManager.addConnection(conn);
         d2.connectionManager.addConnection(conn);
 
-        // Trigger Announce on D1
-        sim1.tick(6000); // Initializes timer
-        sim1.tick(12000); // Should trigger (delta 6000 > 5000)
+        // Trigger Announce on D1 (Android periodic cadence is 30s; immediate announce fires on connect)
+        sim1.sendAnnounce(12000);
         
         // Process connection latency queue
         conn.update(13000); // Advance time past latency
@@ -60,16 +59,11 @@ describe('BitchatAppSimulator', () => {
         d3.connectionManager.addConnection(c23);
 
         // D1 sends ANNOUNCE
-        sim1.tick(6000);
-        sim1.tick(12000);
+        sim1.sendAnnounce(12000);
         
         // Deliver D1 -> D2
         c12.update(13000);
 
-        // D2 receives, relays. 
-        // AppSimulator relays immediately on receivePacket (no tick needed for relay logic usually, unless queueing)
-        // Check BitchatAppSimulator logic if relay is immediate. Assuming yes.
-        
         // Deliver D2 -> D3
         c23.update(14000);
 
