@@ -5,8 +5,12 @@ import * as THREE from 'three';
  *
  * Uses `aFacade` (see `cityGeometry.ts`) to lay out a storey × bay window grid
  * in wall-space meters. Window panes get glass roughness/metalness by day and
- * deterministic per-window interior lighting at night (`uNight`). Window
- * detail fades out with screen-space derivatives to avoid moiré at distance.
+ * deterministic per-window interior lighting at night (`uNight`).
+ *
+ * Anti-aliasing: the window grid is box-filtered analytically over each
+ * pixel's footprint (`filteredPulse`), and per-window lighting blends to its
+ * expected value once windows approach pixel size. Without this the pattern
+ * aliases and lit windows strobe while the camera moves (bloom amplifies it).
  */
 export interface BuildingMaterialUniforms {
     uNight: { value: number };
@@ -57,6 +61,16 @@ float facadeHash(vec2 p) {
     vec3 p3 = fract(vec3(p.xyx) * 0.1031);
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
+}
+// Integral of a unit-period pulse that is 1 on [lo, hi) and 0 elsewhere.
+float pulseIntegral(float x, float lo, float hi) {
+    return floor(x) * (hi - lo) + clamp(fract(x), lo, hi) - lo;
+}
+// Box-filtered pulse: exact average coverage over the pixel footprint [x - w/2, x + w/2].
+// Converges to the duty cycle (hi - lo) as w grows, so the pattern cannot alias.
+float filteredPulse(float x, float w, float lo, float hi) {
+    w = max(w, 1e-4);
+    return (pulseIntegral(x + 0.5 * w, lo, hi) - pulseIntegral(x - 0.5 * w, lo, hi)) / w;
 }`
             )
             .replace(
@@ -73,12 +87,15 @@ float groundFloor = 1.0 - step(1.0, winId.y);
 float belowParapet = step(vFacade.y, vFacade.z - 0.9);
 vec2 lo = mix(mix(vec2(0.2, 0.3), vec2(0.07, 0.06), groundFloor), vec2(0.05, 0.1), tower);
 vec2 hi = mix(mix(vec2(0.8, 0.86), vec2(0.93, 0.8), groundFloor), vec2(0.95, 0.92), tower);
-vec2 fw = fwidth(cell) * 1.3 + 1e-4;
-vec2 m2 = smoothstep(lo - fw, lo + fw, winF) * (1.0 - smoothstep(hi - fw, hi + fw, winF));
-float detail = 1.0 - smoothstep(0.3, 0.85, max(fw.x, fw.y));
-float win = m2.x * m2.y * isWall * belowParapet * detail * step(0.0, vFacade.y);
-// Floor slab bands give scale even when windows fade out
-float slab = isWall * (1.0 - smoothstep(0.0, fw.y * 2.0 + 0.015, winF.y)) * 0.18;
+// Pixel footprint in window cells. Slightly widened so edges stay soft in motion.
+vec2 fw = fwidth(cell) * 1.15;
+float fwMax = max(fw.x, fw.y);
+// Analytically anti-aliased window coverage (separable box filter). Far away
+// this becomes the average glazing ratio instead of a crawling moiré.
+float win = filteredPulse(cell.x, fw.x, lo.x, hi.x) * filteredPulse(cell.y, fw.y, lo.y, hi.y)
+    * isWall * belowParapet * step(0.0, vFacade.y);
+// Floor slab bands (filtered the same way) give scale when windows are sub-pixel
+float slab = isWall * filteredPulse(cell.y, fw.y, 0.0, 0.035) * 0.18;
 diffuseColor.rgb *= 1.0 - slab;
 // Ambient-occlusion-ish darkening near the ground plane
 diffuseColor.rgb *= mix(1.0, 0.62 + 0.38 * smoothstep(0.0, 4.0, max(vFacade.y, 0.0)), isWall);
@@ -105,12 +122,20 @@ float tone = facadeHash(winId * 1.73 + bSeed * 41.0);
 vec3 warm = vec3(1.0, 0.68, 0.38);
 vec3 cool = vec3(0.62, 0.78, 1.0);
 vec3 interior = mix(warm, cool, step(0.78, tone)) * (0.55 + 0.6 * tone);
-// Shop fronts glow brighter; towers have a faint always-on lobby / core glow
+// Shop fronts glow brighter
 float glow = isLit * (1.0 + groundFloor * 0.6);
-totalEmissiveRadiance += interior * win * glow * uNight * 0.75;`
+// Per-window on/off is a hash of the window id: once a pixel spans more than
+// ~1/4 window, neighbouring pixels sample different windows each frame and the
+// lights strobe while the camera moves. Blend to the expected value instead
+// (lit fraction × mean interior colour) so distant facades glow steadily.
+float lodBlend = smoothstep(0.18, 0.45, fwMax);
+vec3 meanInterior = mix(warm, cool, 0.22) * 0.85;
+vec3 perWindow = interior * glow;
+vec3 averaged = meanInterior * (1.0 - litThreshold) * (1.0 + groundFloor * 0.6);
+totalEmissiveRadiance += mix(perWindow, averaged, lodBlend) * win * uNight * 0.75;`
             );
     };
-    material.customProgramCacheKey = () => 'bitchat-building-v3';
+    material.customProgramCacheKey = () => 'bitchat-building-v4';
 
     return { material, uniforms };
 }
