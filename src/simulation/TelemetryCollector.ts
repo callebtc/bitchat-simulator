@@ -165,8 +165,10 @@ export class TelemetryCollector {
     private connectionsBroken: number = 0;
     private dualLinksObserved: number = 0;
 
-    // Sliding window of (simTimeMs, wireBytes) for recent rates (up to 60s)
-    private recentTransmissions: Array<{ timeMs: number; bytes: number }> = [];
+    // O(1) 60-second circular 1-second histogram buckets (zero allocations per packet!)
+    private bucketSec: Int32Array = new Int32Array(60).fill(-1);
+    private bucketPkts: Uint32Array = new Uint32Array(60);
+    private bucketBytes: Float64Array = new Float64Array(60);
 
     reset(): void {
         this.trackedMessages.clear();
@@ -186,7 +188,9 @@ export class TelemetryCollector {
         this.connectionsFailed = 0;
         this.connectionsBroken = 0;
         this.dualLinksObserved = 0;
-        this.recentTransmissions = [];
+        this.bucketSec.fill(-1);
+        this.bucketPkts.fill(0);
+        this.bucketBytes.fill(0);
     }
 
     recordMessageOriginated(
@@ -251,8 +255,15 @@ export class TelemetryCollector {
         if (isRelay) {
             this.relayTransmissions++;
         }
-        this.recentTransmissions.push({ timeMs: simTimeMs, bytes: wireBytes });
-        this.pruneRecent(simTimeMs);
+        const sec = Math.floor(simTimeMs * 0.001);
+        const slot = ((sec % 60) + 60) % 60;
+        if (this.bucketSec[slot] !== sec) {
+            this.bucketSec[slot] = sec;
+            this.bucketPkts[slot] = 0;
+            this.bucketBytes[slot] = 0;
+        }
+        this.bucketPkts[slot]++;
+        this.bucketBytes[slot] += wireBytes;
     }
 
     recordPacketDeliveredOnLink(): void {
@@ -301,8 +312,6 @@ export class TelemetryCollector {
     }
 
     getSnapshot(simTimeMs: number): TelemetrySnapshot {
-        this.pruneRecent(simTimeMs);
-
         const deliveryExpected: Record<'broadcast' | 'dm' | 'file' | 'voice', number> = {
             broadcast: 0,
             dm: 0,
@@ -356,19 +365,23 @@ export class TelemetryCollector {
 
         let recent1s = 0;
         let recent10s = 0;
+        let recent60s = 0;
         let recentWireBytes1s = 0;
-        const cut1s = simTimeMs - 1000;
-        const cut10s = simTimeMs - 10000;
-        for (let i = this.recentTransmissions.length - 1; i >= 0; i--) {
-            const entry = this.recentTransmissions[i];
-            if (entry.timeMs >= cut10s) {
-                recent10s++;
-                if (entry.timeMs >= cut1s) {
-                    recent1s++;
-                    recentWireBytes1s += entry.bytes;
+        const nowSec = Math.floor(simTimeMs * 0.001);
+        for (let i = 0; i < 60; i++) {
+            const bSec = this.bucketSec[i];
+            if (bSec < 0) continue;
+            const age = nowSec - bSec;
+            if (age >= 0 && age < 60) {
+                const pkts = this.bucketPkts[i];
+                recent60s += pkts;
+                if (age < 10) {
+                    recent10s += pkts;
+                    if (age < 1) {
+                        recent1s += pkts;
+                        recentWireBytes1s += this.bucketBytes[i];
+                    }
                 }
-            } else {
-                break;
             }
         }
 
@@ -412,22 +425,8 @@ export class TelemetryCollector {
                     : 0,
             recentPackets1s: recent1s,
             recentPackets10s: recent10s,
-            recentPackets60s: this.recentTransmissions.length,
+            recentPackets60s: recent60s,
             recentWireBytes1s,
         };
-    }
-
-    private pruneRecent(simTimeMs: number): void {
-        const cutoff = simTimeMs - 60_000;
-        let firstValid = 0;
-        while (
-            firstValid < this.recentTransmissions.length &&
-            this.recentTransmissions[firstValid].timeMs < cutoff
-        ) {
-            firstValid++;
-        }
-        if (firstValid > 0) {
-            this.recentTransmissions = this.recentTransmissions.slice(firstValid);
-        }
     }
 }

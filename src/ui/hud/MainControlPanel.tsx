@@ -18,7 +18,6 @@ interface HistoryPoint {
 }
 
 const HISTORY_DURATION_MS = 30000; // 30 seconds
-const UPDATE_INTERVAL_MS = 100; // Update UI every 100ms
 
 const TinyGraph: React.FC<{ data: HistoryPoint[], color: string, label: string, maxValue?: number }> = ({ data, color, label, maxValue }) => {
     // Logical dimensions for viewBox
@@ -97,11 +96,10 @@ const CollapsibleSection: React.FC<{
 
 export const MainControlPanel: React.FC = () => {
     const engine = useSimulation();
-    const { viewCenter } = useSelection();
+    const { viewCenterRef } = useSelection();
     const { bottomPanelHeight } = useLayout();
     const { showAnnouncePackets, setShowAnnouncePackets } = useVisualization();
     
-    const [currentTime, setCurrentTime] = useState(Date.now());
     const [isCollapsed, setIsCollapsed] = usePersistedState('main_panel_collapsed', false);
     
     // Collapsible states
@@ -114,120 +112,73 @@ export const MainControlPanel: React.FC = () => {
     const [fleetPolicy, setFleetPolicy] = useState<MeshPolicyPreset>('android');
     const [fleetWifiAware, setFleetWifiAware] = useState(false);
     
-    // Stats Refs (to avoid re-renders on every packet)
+    // Lightweight graph histories (packet counts come directly from engine.telemetry O(1)!)
     const statsRef = useRef({
-        packetTimestamps: [] as number[], // timestamps of packets
-        totalPackets: 0,
         connectionHistory: [] as HistoryPoint[],
         ppsHistory: [] as HistoryPoint[],
     });
 
-    // Force re-render for UI updates
-    const [, forceUpdate] = useState({});
+    // Force re-render for 4 Hz HUD refresh (250 ms)
+    const [, forceUpdate] = useState(0);
 
     useEffect(() => {
-        const handlePacket = () => {
-            const now = Date.now();
-            statsRef.current.packetTimestamps.push(now);
-            statsRef.current.totalPackets++;
-        };
-
         const handleReset = () => {
             statsRef.current = {
-                packetTimestamps: [],
-                totalPackets: 0,
                 connectionHistory: [],
                 ppsHistory: [],
             };
-            forceUpdate({});
+            forceUpdate(n => n + 1);
         };
         
         const handleEnvironmentLoaded = (data: { buildingCount: number }) => {
-            // Turn on spawn busy when map is loaded
             if (data.buildingCount > 0) {
                 setSpawnBusy(true);
             }
         };
 
-        engine.events.on('packet_transmitted', handlePacket);
         engine.events.on('reset', handleReset);
         engine.events.on('environment_loaded', handleEnvironmentLoaded);
 
         const interval = setInterval(() => {
             const now = Date.now();
-            setCurrentTime(now);
-
-            // Prune packet timestamps older than 1 minute
-            const cutoff1m = now - 60000;
-            const timestamps = statsRef.current.packetTimestamps;
-            
-            // Binary search or simple filter for pruning? Simple filter is fine for <10k items
-            // Optimization: find index of first valid item
-            let validIdx = 0;
-            while(validIdx < timestamps.length && timestamps[validIdx] < cutoff1m) {
-                validIdx++;
-            }
-            if (validIdx > 0) {
-                statsRef.current.packetTimestamps = timestamps.slice(validIdx);
-            }
-
-            // Update Histories
             const connCount = engine.getAllConnections().length;
-            
-            // Calculate PPS (packets in last 1s)
-            const cutoff1s = now - 1000;
-            let pps = 0;
-            for (let i = statsRef.current.packetTimestamps.length - 1; i >= 0; i--) {
-                if (statsRef.current.packetTimestamps[i] >= cutoff1s) {
-                    pps++;
-                } else {
-                    break;
-                }
-            }
+            const snap = engine.telemetry.getSnapshot(engine.simTimeMs);
 
-            // Add history points
             statsRef.current.connectionHistory.push({ time: now, value: connCount });
-            statsRef.current.ppsHistory.push({ time: now, value: pps });
+            statsRef.current.ppsHistory.push({ time: now, value: snap.recentPackets1s });
 
-            // Prune history
             const historyCutoff = now - HISTORY_DURATION_MS;
-            statsRef.current.connectionHistory = statsRef.current.connectionHistory.filter(d => d.time > historyCutoff);
-            statsRef.current.ppsHistory = statsRef.current.ppsHistory.filter(d => d.time > historyCutoff);
-            
-            forceUpdate({});
+            statsRef.current.connectionHistory = statsRef.current.connectionHistory.filter(
+                d => d.time > historyCutoff
+            );
+            statsRef.current.ppsHistory = statsRef.current.ppsHistory.filter(
+                d => d.time > historyCutoff
+            );
 
-        }, UPDATE_INTERVAL_MS);
+            forceUpdate(n => n + 1);
+        }, 250);
 
         return () => {
-            engine.events.off('packet_transmitted', handlePacket);
             engine.events.off('reset', handleReset);
             engine.events.off('environment_loaded', handleEnvironmentLoaded);
             clearInterval(interval);
         };
     }, [engine]);
 
-    // Derived stats for render
-    const now = currentTime;
-    const timestamps = statsRef.current.packetTimestamps;
-    
-    const count1s = statsRef.current.ppsHistory.length > 0 ? statsRef.current.ppsHistory[statsRef.current.ppsHistory.length - 1].value : 0;
-    
-    // Efficiently count last 10s
-    const cutoff10s = now - 10000;
-    let count10s = 0;
-    for (let i = timestamps.length - 1; i >= 0; i--) {
-        if (timestamps[i] >= cutoff10s) count10s++;
-        else break;
-    }
-    
-    const count1m = timestamps.length; // We prune > 1m so length is correct
-    
     const peerCount = engine.getAllPeople().length;
     const allConns = engine.getAllConnections();
     const connCount = allConns.length;
-    const bleConnCount = allConns.filter(c => c.transportType === 'BLE').length;
-    const wifiConnCount = allConns.filter(c => c.transportType === 'WIFI_AWARE').length;
+    let bleConnCount = 0;
+    let wifiConnCount = 0;
+    for (let i = 0; i < allConns.length; i++) {
+        if (allConns[i].transportType === 'WIFI_AWARE') wifiConnCount++;
+        else bleConnCount++;
+    }
     const telemetry = engine.telemetry.getSnapshot(engine.simTimeMs);
+    const count1s = telemetry.recentPackets1s;
+    const count10s = telemetry.recentPackets10s;
+    const count1m = telemetry.recentPackets60s;
+    const totalPackets = telemetry.packetsSent;
 
     const handleFleetPolicyChange = (preset: MeshPolicyPreset) => {
         setFleetPolicy(preset);
@@ -245,17 +196,25 @@ export const MainControlPanel: React.FC = () => {
         });
     };
 
+    const spawnBatch = (count: number) => {
+        const preferOutdoors = engine.environment.getBuildingCount() > 0 && count >= 10;
+        for (let i = 0; i < count; i++) {
+            addRandomNode(engine, {
+                center: viewCenterRef.current,
+                preferOutdoors,
+                initialMode: spawnBusy ? MovementMode.BUSY : undefined,
+                policyPreset: fleetPolicy,
+                wifiAwareEnabled: fleetWifiAware,
+            });
+        }
+        forceUpdate(n => n + 1);
+    };
+
     const handleAddNode = () => {
-        addRandomNode(engine, {
-            center: viewCenter,
-            initialMode: spawnBusy ? MovementMode.BUSY : undefined,
-            policyPreset: fleetPolicy,
-            wifiAwareEnabled: fleetWifiAware,
-        });
+        spawnBatch(1);
     };
     
     // Long-press charging state for adding multiple nodes
-    // Using refs to avoid stale closure issues in event handlers
     const [chargeCount, setChargeCount] = useState(0);
     const [isCharging, setIsCharging] = useState(false);
     const chargeCountRef = useRef(0);
@@ -264,8 +223,8 @@ export const MainControlPanel: React.FC = () => {
     const longPressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     
     const LONG_PRESS_THRESHOLD = 400; // ms before charging starts
-    const CHARGE_INTERVAL = 60; // ms between count increments
-    const MAX_CHARGE = 100;
+    const CHARGE_INTERVAL = 50; // ms between count increments
+    const MAX_CHARGE = 1000;
     
     const startCharging = () => {
         isChargingRef.current = true;
@@ -274,50 +233,33 @@ export const MainControlPanel: React.FC = () => {
         setChargeCount(1);
         
         chargeIntervalRef.current = setInterval(() => {
-            chargeCountRef.current = Math.min(chargeCountRef.current + 1, MAX_CHARGE);
+            const step = chargeCountRef.current >= 100 ? 25 : chargeCountRef.current >= 20 ? 5 : 1;
+            chargeCountRef.current = Math.min(chargeCountRef.current + step, MAX_CHARGE);
             setChargeCount(chargeCountRef.current);
         }, CHARGE_INTERVAL);
     };
     
     const handleAddNodePointerDown = (e: React.PointerEvent) => {
         e.preventDefault();
-        // Start long-press timer
         longPressTimeoutRef.current = setTimeout(() => {
             startCharging();
         }, LONG_PRESS_THRESHOLD);
     };
     
     const handleAddNodePointerUp = () => {
-        // Clear long-press timer
         if (longPressTimeoutRef.current) {
             clearTimeout(longPressTimeoutRef.current);
             longPressTimeoutRef.current = null;
         }
-        
-        // Clear charging interval
         if (chargeIntervalRef.current) {
             clearInterval(chargeIntervalRef.current);
             chargeIntervalRef.current = null;
         }
-        
-        // Use refs for current values (avoids stale closure)
         if (isChargingRef.current && chargeCountRef.current > 0) {
-            // Add multiple nodes
-            const countToAdd = chargeCountRef.current;
-            for (let i = 0; i < countToAdd; i++) {
-                addRandomNode(engine, {
-                    center: viewCenter,
-                    initialMode: spawnBusy ? MovementMode.BUSY : undefined,
-                    policyPreset: fleetPolicy,
-                    wifiAwareEnabled: fleetWifiAware,
-                });
-            }
+            spawnBatch(chargeCountRef.current);
         } else {
-            // Single click - add one node
             handleAddNode();
         }
-        
-        // Reset state
         isChargingRef.current = false;
         chargeCountRef.current = 0;
         setIsCharging(false);
@@ -432,6 +374,28 @@ export const MainControlPanel: React.FC = () => {
                     </button>
                 </div>
                 
+                {/* Quick Crowd Scale Buttons */}
+                <div className="flex gap-1.5">
+                    <button
+                        className="flex-1 bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 px-2 py-1 rounded text-[10px] font-bold border border-cyan-900/50 transition-all"
+                        onClick={() => spawnBatch(100)}
+                    >
+                        +100
+                    </button>
+                    <button
+                        className="flex-1 bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 px-2 py-1 rounded text-[10px] font-bold border border-cyan-900/50 transition-all"
+                        onClick={() => spawnBatch(500)}
+                    >
+                        +500
+                    </button>
+                    <button
+                        className="flex-1 bg-cyan-950/40 hover:bg-cyan-900/50 text-cyan-300 px-2 py-1 rounded text-[10px] font-bold border border-cyan-900/50 transition-all"
+                        onClick={() => spawnBatch(1000)}
+                    >
+                        +1000
+                    </button>
+                </div>
+
                 {/* Population Section */}
                 <CollapsibleSection 
                     title="Population" 
@@ -598,7 +562,7 @@ export const MainControlPanel: React.FC = () => {
                                 </div>
                                 <div>
                                     <div className="text-[9px] text-gray-600">Total</div>
-                                    <div className="text-xs text-white">{statsRef.current.totalPackets}</div>
+                                    <div className="text-xs text-white">{totalPackets}</div>
                                 </div>
                             </div>
                         </div>

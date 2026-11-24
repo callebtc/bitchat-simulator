@@ -1,8 +1,9 @@
 import { BitchatPerson } from './BitchatPerson';
-import { BitchatDevice } from './BitchatDevice';
+import { BitchatDevice, DeviceRuntime } from './BitchatDevice';
 import { SpatialManager } from './SpatialManager';
 import { EventBus } from '../events/EventBus';
-import { BitchatConnection } from './BitchatConnection';
+import { BitchatConnection, TransportKind } from './BitchatConnection';
+import { BitchatPacket, MessageType } from '../protocol/BitchatPacket';
 import { BitchatConnectionBLE, RSSI_CONFIG } from './BitchatConnectionBLE';
 import { BitchatConnectionWifiAware, WIFI_AWARE_CONFIG } from './BitchatConnectionWifiAware';
 import { LogManager } from './LogManager';
@@ -10,12 +11,10 @@ import { EnvironmentManager, PathFinder } from './environment';
 import { SeededRandom } from './SeededRandom';
 import { EventScheduler } from './EventScheduler';
 import { TelemetryCollector } from './TelemetryCollector';
-import { DeviceRuntime } from './BitchatDevice';
 import { RadioMedium, RadioMediumConfig } from './RadioMedium';
 
 const CONNECT_RADIUS = 100;
 const DISCONNECT_RADIUS = 110;
-/** Padding distance from building walls for pathfinding (meters) */
 const PATHFINDING_PADDING = 2.5;
 
 // Android MeshConnectionTracker retry & GATT setup constants
@@ -24,16 +23,16 @@ const MAX_CONNECTION_ATTEMPTS = 3;
 const CONNECTION_ATTEMPT_EXPIRY_MS = CONNECTION_RETRY_DELAY_MS * 2;
 const DEFAULT_GATT_HANDSHAKE_MS = 500; // 200ms MTU(517) + 100ms discover/CCCD + 200ms ready
 
+// Scaling thresholds: <= 100 nodes run full 20 Hz; > 100 nodes stagger discovery & RSSI across 5 buckets (4 Hz)
+const STAGGER_POPULATION_THRESHOLD = 100;
+const STAGGER_BUCKETS = 5;
+const LARGE_CROWD_MAX_NEIGHBOR_SAMPLE = 24;
+
 export interface SimulationEngineOptions {
-    /** Deterministic PRNG seed (default: 0x5eed1234) */
     seed?: number;
-    /** Staged BLE GATT handshake duration in ms (default: 500 ms matching Android) */
     gattHandshakeMs?: number;
-    /** Wi-Fi Aware NAN + NDP + TCP handshake duration in ms (default: 1200 ms) */
     wifiAwareHandshakeMs?: number;
-    /** Allow concurrent dual-role BLE links during scan races (default: true) */
     allowDualRoleLinks?: boolean;
-    /** Optional RadioMedium overrides (e.g. disable RF interference in isolated tests) */
     radioMediumConfig?: Partial<RadioMediumConfig>;
 }
 
@@ -64,13 +63,26 @@ export class SimulationEngine {
     private isRunning: boolean = false;
     private lastWallTime: number = 0;
     private accumulatedTime: number = 0;
+    private tickCounter: number = 0;
+    private visualPktsEmittedThisTick: number = 0;
     readonly FIXED_TIME_STEP = 0.05; // 50ms physics/RSSI tick
-    private people: Map<string, BitchatPerson> = new Map();
 
-    // Active connections keyed by linkID ("BLE:<client>-><server>" or "WIFI_AWARE:<a>-<b>")
+    private people: Map<string, BitchatPerson> = new Map();
+    private personByPeerId: Map<string, BitchatPerson> = new Map();
+
+    // Active connections keyed by linkID + cached dense list for zero-alloc rendering
     private globalConnections: Map<string, BitchatConnection> = new Map();
+    private connectionsListCache: BitchatConnection[] = [];
+    private connectionsDirty: boolean = false;
+
     // Pending BLE GATT / Wi-Fi Aware handshakes keyed by linkID
     private pendingConnections: Map<string, PendingHandshake> = new Map();
+    // O(1) pending slot counters per device & transport (eliminates O(P) inner-loop scans)
+    private pendingBleClients: Map<string, number> = new Map();
+    private pendingBleServers: Map<string, number> = new Map();
+    private pendingWifiClients: Map<string, number> = new Map();
+    private pendingWifiServers: Map<string, number> = new Map();
+
     // MeshConnectionTracker retry/backoff state keyed by linkID
     private attemptTracker: Map<string, ConnectionAttemptRecord> = new Map();
 
@@ -113,9 +125,13 @@ export class SimulationEngine {
         person.setRng(this.rng.fork(`person:${person.id}`));
         person.device.attachRuntime(this.createDeviceRuntime());
         this.people.set(person.id, person);
+        this.personByPeerId.set(person.device.peerIDHex, person);
         this.spatial.addPerson(person);
+        this.logManager.suppressDebug = this.people.size > STAGGER_POPULATION_THRESHOLD;
         this.events.emit('person_added', person);
-        this.logManager.log('INFO', 'GLOBAL', `Added person ${person.id}`);
+        if (this.people.size <= STAGGER_POPULATION_THRESHOLD) {
+            this.logManager.log('INFO', 'GLOBAL', `Added person ${person.id}`);
+        }
     }
 
     rebuildPathfindingGraph(): boolean {
@@ -151,15 +167,21 @@ export class SimulationEngine {
                     this.breakConnection(key, conn);
                 }
             });
+            const pendingToRemove: string[] = [];
             this.pendingConnections.forEach((pending, key) => {
                 if (pending.conn.involves(person.device)) {
-                    this.pendingConnections.delete(key);
+                    pendingToRemove.push(key);
                 }
             });
+            for (const key of pendingToRemove) {
+                this.deletePending(key);
+            }
+            this.personByPeerId.delete(person.device.peerIDHex);
         }
 
         this.people.delete(id);
         this.spatial.removePerson(id);
+        this.logManager.suppressDebug = this.people.size > STAGGER_POPULATION_THRESHOLD;
         this.events.emit('person_removed', id);
         this.logManager.log('INFO', 'GLOBAL', `Removed person ${id}`);
     }
@@ -169,20 +191,29 @@ export class SimulationEngine {
             conn.close();
         });
         this.globalConnections.clear();
+        this.connectionsListCache = [];
+        this.connectionsDirty = false;
         this.pendingConnections.clear();
+        this.pendingBleClients.clear();
+        this.pendingBleServers.clear();
+        this.pendingWifiClients.clear();
+        this.pendingWifiServers.clear();
         this.attemptTracker.clear();
 
         const ids = Array.from(this.people.keys());
-        ids.forEach(id => {
-            this.spatial.removePerson(id);
-        });
+        for (let i = 0; i < ids.length; i++) {
+            this.spatial.removePerson(ids[i]);
+        }
         this.people.clear();
+        this.personByPeerId.clear();
 
         this.simTimeMs = 0;
+        this.tickCounter = 0;
         this.rng = new SeededRandom(newSeed ?? this.initialSeed);
         this.scheduler.clear(0);
         this.telemetry.reset();
         this.radioMedium.reset();
+        this.logManager.suppressDebug = false;
         this.logManager.clear();
 
         this.events.emit('reset', undefined);
@@ -200,9 +231,6 @@ export class SimulationEngine {
         this.isRunning = false;
     }
 
-    /**
-     * Advance the simulation deterministically by `durationMs` in fixed increments.
-     */
     runFor(durationMs: number, stepMs: number = 50): void {
         const targetEnd = this.simTimeMs + Math.max(0, durationMs);
         while (this.simTimeMs + stepMs <= targetEnd) {
@@ -214,23 +242,24 @@ export class SimulationEngine {
         }
     }
 
-    /**
-     * Advance one simulation step using monotonic simTimeMs (never wall clock).
-     */
     step(dt: number, nowOverride?: number): void {
         const targetNow =
             nowOverride !== undefined ? nowOverride : this.simTimeMs + dt * 1000;
         this.simTimeMs = targetNow;
+        this.tickCounter++;
+        this.visualPktsEmittedThisTick = 0;
 
         // 1. Drain sub-tick scheduled protocol/GATT events up to targetNow
         this.scheduler.drainUntil(targetNow);
         this.simTimeMs = targetNow;
 
-        // 2. Update positions & device ticks
-        this.people.forEach(person => {
+        // 2. Update positions & device ticks (dense array iteration, zero Map iterator overhead)
+        const peopleList = this.spatial.getAll();
+        for (let i = 0; i < peopleList.length; i++) {
+            const person = peopleList[i];
             person.update(dt);
             person.device.tick(targetNow);
-        });
+        }
 
         // 3. Update Spatial Grid
         this.spatial.updateAll();
@@ -245,6 +274,43 @@ export class SimulationEngine {
         this.simTimeMs = targetNow;
 
         this.events.emit('tick', this.people);
+    }
+
+    private adjustPendingCounts(
+        conn: BitchatConnectionBLE | BitchatConnectionWifiAware,
+        delta: 1 | -1
+    ): void {
+        const clientId = conn.getClient().peerIDHex;
+        const serverId = conn.getServer().peerIDHex;
+        const clientMap =
+            conn.transportType === 'WIFI_AWARE' ? this.pendingWifiClients : this.pendingBleClients;
+        const serverMap =
+            conn.transportType === 'WIFI_AWARE' ? this.pendingWifiServers : this.pendingBleServers;
+
+        const nextClient = (clientMap.get(clientId) ?? 0) + delta;
+        if (nextClient <= 0) clientMap.delete(clientId);
+        else clientMap.set(clientId, nextClient);
+
+        const nextServer = (serverMap.get(serverId) ?? 0) + delta;
+        if (nextServer <= 0) serverMap.delete(serverId);
+        else serverMap.set(serverId, nextServer);
+    }
+
+    private setPending(
+        key: string,
+        conn: BitchatConnectionBLE | BitchatConnectionWifiAware,
+        finalizeAt: number
+    ): void {
+        this.pendingConnections.set(key, { conn, finalizeAt });
+        this.adjustPendingCounts(conn, 1);
+    }
+
+    private deletePending(key: string): PendingHandshake | undefined {
+        const existing = this.pendingConnections.get(key);
+        if (!existing) return undefined;
+        this.pendingConnections.delete(key);
+        this.adjustPendingCounts(existing.conn, -1);
+        return existing;
     }
 
     private isAttemptAllowed(directedKey: string, now: number): boolean {
@@ -266,6 +332,8 @@ export class SimulationEngine {
     }
 
     private updatePendingConnections(now: number): void {
+        if (this.pendingConnections.size === 0) return;
+
         const toFinalize: string[] = [];
         const toDrop: string[] = [];
 
@@ -286,7 +354,7 @@ export class SimulationEngine {
             if (conn.endpointA.position && conn.endpointB.position) {
                 const dx = conn.endpointA.position.x - conn.endpointB.position.x;
                 const dy = conn.endpointA.position.y - conn.endpointB.position.y;
-                if (Math.sqrt(dx * dx + dy * dy) > maxDist) {
+                if (dx * dx + dy * dy > maxDist * maxDist) {
                     distanceOk = false;
                 }
             }
@@ -301,30 +369,35 @@ export class SimulationEngine {
             }
         });
 
-        toDrop.forEach(key => {
-            this.pendingConnections.delete(key);
+        for (let i = 0; i < toDrop.length; i++) {
+            this.deletePending(toDrop[i]);
             this.telemetry.recordConnectionFailed();
-        });
+        }
 
-        toFinalize.forEach(key => {
-            const pending = this.pendingConnections.get(key);
+        for (let i = 0; i < toFinalize.length; i++) {
+            const key = toFinalize[i];
+            const pending = this.deletePending(key);
             if (pending) {
-                this.pendingConnections.delete(key);
                 this.finalizeConnection(key, pending.conn, now);
             }
-        });
+        }
     }
 
     private updateConnectivity(now: number): void {
-        const peopleList = Array.from(this.people.values());
+        const peopleList = this.spatial.getAll();
+        const isLargeCrowd = peopleList.length > STAGGER_POPULATION_THRESHOLD;
+        const bucket = this.tickCounter % STAGGER_BUCKETS;
 
-        // 1. Evaluate active links for distance/closed disconnect
+        // 1. Evaluate active links for distance/closed disconnect (staggered at 4 Hz for large crowds)
         const toBreak: Array<{ key: string; conn: BitchatConnection }> = [];
+        let connIdx = 0;
         this.globalConnections.forEach((conn, key) => {
+            const idx = connIdx++;
             if (!conn.isActive) {
                 toBreak.push({ key, conn });
                 return;
             }
+            if (isLargeCrowd && idx % STAGGER_BUCKETS !== bucket) return;
             if (!conn.endpointA.position || !conn.endpointB.position) return;
             const maxDist =
                 conn.transportType === 'WIFI_AWARE'
@@ -332,32 +405,42 @@ export class SimulationEngine {
                     : DISCONNECT_RADIUS;
             const dx = conn.endpointA.position.x - conn.endpointB.position.x;
             const dy = conn.endpointA.position.y - conn.endpointB.position.y;
-            if (Math.sqrt(dx * dx + dy * dy) > maxDist) {
+            if (dx * dx + dy * dy > maxDist * maxDist) {
                 toBreak.push({ key, conn });
             }
         });
-        for (const item of toBreak) {
-            this.breakConnection(item.key, item.conn);
+        for (let i = 0; i < toBreak.length; i++) {
+            this.breakConnection(toBreak[i].key, toBreak[i].conn);
         }
 
-        // 2. Scanning discovery (directed client -> server evaluation, allowing realistic dual-role races)
-        for (const scanner of peopleList) {
+        // 2. BLE scanning discovery (full 20 Hz for <= 100 nodes; staggered 4 Hz round-robin for > 100 nodes)
+        const connectRadiusSq = CONNECT_RADIUS * CONNECT_RADIUS;
+        const maxNeighborSample = isLargeCrowd ? LARGE_CROWD_MAX_NEIGHBOR_SAMPLE : undefined;
+
+        for (let pi = 0; pi < peopleList.length; pi++) {
+            if (isLargeCrowd && pi % STAGGER_BUCKETS !== bucket) continue;
+            const scanner = peopleList[pi];
             if (!scanner.device.isScanning) continue;
             if (!this.canInitiateOrAccept(scanner.device, true, 'BLE')) continue;
 
             const scanRssiThreshold = scanner.device.getScanRssiThreshold();
-            const neighbors = this.spatial.getNeighbors(scanner, CONNECT_RADIUS);
-            // Randomize BLE advertising arrival order (Bluetooth Core Spec random advDelay)
+            const minRssi =
+                scanRssiThreshold > RSSI_CONFIG.DISCONNECT_THRESHOLD
+                    ? scanRssiThreshold
+                    : RSSI_CONFIG.DISCONNECT_THRESHOLD;
+            const neighbors = this.spatial.getNeighbors(scanner, CONNECT_RADIUS, maxNeighborSample);
+            if (neighbors.length === 0) continue;
+
             this.rng.shuffle(neighbors);
 
-            for (const target of neighbors) {
+            for (let ni = 0; ni < neighbors.length; ni++) {
                 if (!this.canInitiateOrAccept(scanner.device, true, 'BLE')) break;
+                const target = neighbors[ni];
                 const directedKey = this.getDirectedBleKey(
                     scanner.device.peerIDHex,
                     target.device.peerIDHex
                 );
 
-                // Already have this exact directed link active or pending
                 if (
                     this.globalConnections.has(directedKey) ||
                     this.pendingConnections.has(directedKey)
@@ -365,14 +448,15 @@ export class SimulationEngine {
                     continue;
                 }
 
-                // Android BluetoothGattClientManager checks service-data peerID against ALREADY established links.
-                // Note: if the reverse link is only *pending* (both devices scanning concurrently), a realistic
-                // dual-role scan race occurs when allowDualRoleLinks is enabled!
-                if (scanner.device.connectionManager.hasActiveConnectionToPeer(target.device.peerIDHex, 'BLE')) {
+                if (
+                    scanner.device.connectionManager.hasActiveConnectionToPeer(
+                        target.device.peerIDHex,
+                        'BLE'
+                    )
+                ) {
                     continue;
                 }
-                const collapseDual = this.shouldCollapseDualLinks(scanner.device, target.device);
-                if (collapseDual) {
+                if (this.shouldCollapseDualLinks(scanner.device, target.device)) {
                     const reverseKey = this.getDirectedBleKey(
                         target.device.peerIDHex,
                         scanner.device.peerIDHex
@@ -395,7 +479,7 @@ export class SimulationEngine {
 
                 const dx = scanner.position.x - target.position.x;
                 const dy = scanner.position.y - target.position.y;
-                if (Math.sqrt(dx * dx + dy * dy) >= CONNECT_RADIUS) continue;
+                if (dx * dx + dy * dy >= connectRadiusSq) continue;
 
                 const estimatedRSSI = BitchatConnectionBLE.estimateRSSI(
                     scanner.position,
@@ -404,8 +488,6 @@ export class SimulationEngine {
                     target.device.bluetoothStrength,
                     this.environment
                 );
-                // Must pass both scanner's power-mode RSSI threshold AND minimum link floor
-                const minRssi = Math.max(scanRssiThreshold, RSSI_CONFIG.DISCONNECT_THRESHOLD);
                 if (estimatedRSSI <= minRssi) continue;
 
                 this.initiateConnection(directedKey, scanner, target, now, estimatedRSSI);
@@ -413,16 +495,26 @@ export class SimulationEngine {
         }
 
         // 3. Wi-Fi Aware NAN discovery (5 GHz, undirected peer TCP sockets)
-        for (const peerA of peopleList) {
+        const wifiRadiusSq =
+            WIFI_AWARE_CONFIG.CONNECT_RADIUS_M * WIFI_AWARE_CONFIG.CONNECT_RADIUS_M;
+        for (let pi = 0; pi < peopleList.length; pi++) {
+            if (isLargeCrowd && pi % STAGGER_BUCKETS !== bucket) continue;
+            const peerA = peopleList[pi];
             if (!peerA.device.wifiAwareEnabled) continue;
             if (!this.canInitiateOrAccept(peerA.device, true, 'WIFI_AWARE')) continue;
 
-            const neighbors = this.spatial.getNeighbors(peerA, WIFI_AWARE_CONFIG.CONNECT_RADIUS_M);
+            const neighbors = this.spatial.getNeighbors(
+                peerA,
+                WIFI_AWARE_CONFIG.CONNECT_RADIUS_M,
+                maxNeighborSample
+            );
+            if (neighbors.length === 0) continue;
             this.rng.shuffle(neighbors);
-            for (const peerB of neighbors) {
+
+            for (let ni = 0; ni < neighbors.length; ni++) {
                 if (!this.canInitiateOrAccept(peerA.device, true, 'WIFI_AWARE')) break;
+                const peerB = neighbors[ni];
                 if (!peerB.device.wifiAwareEnabled) continue;
-                // Lexicographic tie-breaker prevents duplicate NAN TCP connection races
                 if (peerA.device.peerIDHex >= peerB.device.peerIDHex) continue;
 
                 const wifiKey = `WIFI_AWARE:${peerA.device.peerIDHex}-${peerB.device.peerIDHex}`;
@@ -438,7 +530,7 @@ export class SimulationEngine {
 
                 const dx = peerA.position.x - peerB.position.x;
                 const dy = peerA.position.y - peerB.position.y;
-                if (Math.sqrt(dx * dx + dy * dy) >= WIFI_AWARE_CONFIG.CONNECT_RADIUS_M) continue;
+                if (dx * dx + dy * dy >= wifiRadiusSq) continue;
 
                 const estimatedRssi = BitchatConnectionWifiAware.estimateRSSI(
                     peerA.position,
@@ -462,9 +554,22 @@ export class SimulationEngine {
         const safeDt = Math.min(dt, 0.25);
         this.accumulatedTime += safeDt;
 
-        while (this.accumulatedTime >= this.FIXED_TIME_STEP) {
+        // Cap catch-up substeps & wall-time budget per animation frame so massive crowds keep UI responsive
+        let substeps = 0;
+        const maxSubsteps = 2;
+        const frameBudgetMs = 14;
+        const frameStart = performance.now();
+        while (
+            this.accumulatedTime >= this.FIXED_TIME_STEP &&
+            substeps < maxSubsteps &&
+            performance.now() - frameStart < frameBudgetMs
+        ) {
             this.step(this.FIXED_TIME_STEP);
             this.accumulatedTime -= this.FIXED_TIME_STEP;
+            substeps++;
+        }
+        if (this.accumulatedTime > this.FIXED_TIME_STEP * 2) {
+            this.accumulatedTime = this.FIXED_TIME_STEP;
         }
 
         requestAnimationFrame(this.loop);
@@ -474,54 +579,80 @@ export class SimulationEngine {
         return this.people.get(id);
     }
 
+    getPersonByPeerId(peerIdHex: string): BitchatPerson | undefined {
+        return this.personByPeerId.get(peerIdHex);
+    }
+
     getAllPeople(): BitchatPerson[] {
-        return Array.from(this.people.values());
+        return this.spatial.getAll();
     }
 
     getAllConnections(): BitchatConnection[] {
-        return Array.from(this.globalConnections.values());
+        if (this.connectionsDirty) {
+            this.connectionsListCache = Array.from(this.globalConnections.values());
+            this.connectionsDirty = false;
+        }
+        return this.connectionsListCache;
+    }
+
+    getConnectionById(id: string): BitchatConnection | undefined {
+        return this.globalConnections.get(id);
     }
 
     registerExternalConnection(conn: BitchatConnection): void {
         this.globalConnections.set(conn.id, conn);
+        this.connectionsDirty = true;
     }
 
     removeExternalConnection(key: string): void {
         this.globalConnections.delete(key);
+        this.connectionsDirty = true;
     }
 
     private updateConnectionsRSSI(now: number): void {
+        if (this.globalConnections.size === 0) return;
+        const isLargeCrowd = this.people.size > STAGGER_POPULATION_THRESHOLD;
+        const bucket = this.tickCounter % STAGGER_BUCKETS;
         const connectionsToBreak: string[] = [];
 
+        let idx = 0;
         this.globalConnections.forEach((conn, key) => {
+            const myIdx = idx++;
             conn.update(now);
+
+            if (isLargeCrowd && myIdx % STAGGER_BUCKETS !== bucket) return;
 
             if (conn instanceof BitchatConnectionBLE) {
                 const shouldRemain = conn.updateRSSI(now);
                 if (!shouldRemain) {
                     connectionsToBreak.push(key);
-                    this.logManager.log(
-                        'INFO',
-                        'CONNECTION',
-                        `Signal lost (RSSI: ${conn.rssi.toFixed(1)} dBm)`,
-                        conn.id
-                    );
+                    if (!isLargeCrowd) {
+                        this.logManager.log(
+                            'INFO',
+                            'CONNECTION',
+                            `Signal lost (RSSI: ${conn.rssi.toFixed(1)} dBm)`,
+                            conn.id
+                        );
+                    }
                 }
             } else if (conn instanceof BitchatConnectionWifiAware) {
                 const shouldRemain = conn.updateRSSI();
                 if (!shouldRemain) {
                     connectionsToBreak.push(key);
-                    this.logManager.log(
-                        'INFO',
-                        'CONNECTION',
-                        `Wi-Fi Aware signal lost (RSSI: ${conn.rssi.toFixed(1)} dBm)`,
-                        conn.id
-                    );
+                    if (!isLargeCrowd) {
+                        this.logManager.log(
+                            'INFO',
+                            'CONNECTION',
+                            `Wi-Fi Aware signal lost (RSSI: ${conn.rssi.toFixed(1)} dBm)`,
+                            conn.id
+                        );
+                    }
                 }
             }
         });
 
-        for (const key of connectionsToBreak) {
+        for (let i = 0; i < connectionsToBreak.length; i++) {
+            const key = connectionsToBreak[i];
             const conn = this.globalConnections.get(key);
             if (conn) {
                 this.breakConnection(key, conn);
@@ -532,16 +663,19 @@ export class SimulationEngine {
     private canInitiateOrAccept(
         device: BitchatDevice,
         asClient: boolean,
-        transport: 'BLE' | 'WIFI_AWARE'
+        transport: TransportKind
     ): boolean {
         const active = device.connectionManager.getRoleCounts(transport);
-        let pendingClients = 0;
-        let pendingServers = 0;
-        this.pendingConnections.forEach(({ conn }) => {
-            if (conn.transportType !== transport) return;
-            if (conn.getClient() === device) pendingClients++;
-            else if (conn.getServer() === device) pendingServers++;
-        });
+        const peerId = device.peerIDHex;
+        const pendingClients =
+            (transport === 'WIFI_AWARE'
+                ? this.pendingWifiClients.get(peerId)
+                : this.pendingBleClients.get(peerId)) ?? 0;
+        const pendingServers =
+            (transport === 'WIFI_AWARE'
+                ? this.pendingWifiServers.get(peerId)
+                : this.pendingBleServers.get(peerId)) ?? 0;
+
         const limits = device.connectionSettings;
         const total = active.total + pendingClients + pendingServers;
         if (total >= limits.maxTotal) return false;
@@ -557,6 +691,30 @@ export class SimulationEngine {
             a.appSimulator?.shouldCollapseDuplicateLinks?.() ||
                 b.appSimulator?.shouldCollapseDuplicateLinks?.()
         );
+    }
+
+    private emitPacketTransmitted(
+        connectionId: string,
+        packet: BitchatPacket,
+        fromId: string
+    ): void {
+        // Always emit all events for <= 100 nodes, routed packets, and user data packets;
+        // throttle background ANNOUNCE/REQUEST_SYNC visual dot emissions in 1000+ node crowds
+        // (telemetry still records 100% of transmissions accurately).
+        if (this.people.size > STAGGER_POPULATION_THRESHOLD) {
+            const isBackground =
+                packet.type === MessageType.ANNOUNCE ||
+                packet.type === MessageType.REQUEST_SYNC;
+            if (isBackground && !packet.route) {
+                if (this.visualPktsEmittedThisTick >= 120) return;
+                this.visualPktsEmittedThisTick++;
+            }
+        }
+        this.events.emit('packet_transmitted', {
+            connectionId,
+            packet,
+            fromId,
+        });
     }
 
     private getDirectedBleKey(clientPeerHex: string, serverPeerHex: string): string {
@@ -594,18 +752,11 @@ export class SimulationEngine {
         });
 
         conn.onPacketSent = (packet, from) => {
-            this.events.emit('packet_transmitted', {
-                connectionId: conn.id,
-                packet,
-                fromId: from.peerIDHex,
-            });
+            this.emitPacketTransmitted(conn.id, packet, from.peerIDHex);
         };
 
         this.telemetry.recordConnectionInitiated();
-        this.pendingConnections.set(directedKey, {
-            conn,
-            finalizeAt: now + this.gattHandshakeMs,
-        });
+        this.setPending(directedKey, conn, now + this.gattHandshakeMs);
     }
 
     private initiateWifiAwareConnection(
@@ -639,18 +790,11 @@ export class SimulationEngine {
         });
 
         conn.onPacketSent = (packet, from) => {
-            this.events.emit('packet_transmitted', {
-                connectionId: conn.id,
-                packet,
-                fromId: from.peerIDHex,
-            });
+            this.emitPacketTransmitted(conn.id, packet, from.peerIDHex);
         };
 
         this.telemetry.recordConnectionInitiated();
-        this.pendingConnections.set(wifiKey, {
-            conn,
-            finalizeAt: now + this.wifiAwareHandshakeMs,
-        });
+        this.setPending(wifiKey, conn, now + this.wifiAwareHandshakeMs);
     }
 
     private finalizeConnection(
@@ -667,12 +811,14 @@ export class SimulationEngine {
             !serverDev.connectionManager.canAcceptConnection(false, transport)
         ) {
             this.telemetry.recordConnectionFailed();
-            this.logManager.log(
-                'INFO',
-                'CONNECTION',
-                `Connection Failed (Slots Full during ${transport} setup)`,
-                conn.id
-            );
+            if (this.people.size <= STAGGER_POPULATION_THRESHOLD) {
+                this.logManager.log(
+                    'INFO',
+                    'CONNECTION',
+                    `Connection Failed (Slots Full during ${transport} setup)`,
+                    conn.id
+                );
+            }
             return;
         }
 
@@ -691,6 +837,7 @@ export class SimulationEngine {
         conn.createdAtMs = now;
         conn.lastActivityAtMs = now;
         this.globalConnections.set(key, conn);
+        this.connectionsDirty = true;
 
         clientDev.connectionManager.addConnection(conn);
         serverDev.connectionManager.addConnection(conn);
@@ -700,10 +847,12 @@ export class SimulationEngine {
         serverDev.appSimulator?.onConnectionEstablished?.(conn, now);
 
         this.events.emit('connection_formed', conn);
-        this.logManager.log('INFO', 'CONNECTION', 'Connection Formed', conn.id, {
-            between: [clientDev.nickname, serverDev.nickname],
-            dualLink: isDualLink,
-        });
+        if (this.people.size <= STAGGER_POPULATION_THRESHOLD) {
+            this.logManager.log('INFO', 'CONNECTION', 'Connection Formed', conn.id, {
+                between: [clientDev.nickname, serverDev.nickname],
+                dualLink: isDualLink,
+            });
+        }
     }
 
     private breakConnection(key: string, conn: BitchatConnection): void {
@@ -712,12 +861,15 @@ export class SimulationEngine {
         conn.endpointB.connectionManager.removeConnection(conn.id);
 
         this.globalConnections.delete(key);
+        this.connectionsDirty = true;
         this.telemetry.recordConnectionBroken();
 
         conn.endpointA.appSimulator?.onConnectionBroken?.(conn, this.simTimeMs);
         conn.endpointB.appSimulator?.onConnectionBroken?.(conn, this.simTimeMs);
 
         this.events.emit('connection_broken', conn);
-        this.logManager.log('INFO', 'CONNECTION', 'Connection Broken', conn.id);
+        if (this.people.size <= STAGGER_POPULATION_THRESHOLD) {
+            this.logManager.log('INFO', 'CONNECTION', 'Connection Broken', conn.id);
+        }
     }
 }
