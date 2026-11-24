@@ -106,7 +106,11 @@ export function buildCityGeometry(
         const height = b.height ?? 12;
         if (height > maxHeight) maxHeight = height;
         const base = groundBase(b);
-        const bottom = base - (base !== 0 ? PLINTH_DEPTH_M : 0);
+        // Volumes starting above ground (overhangs, bridges, upper parts) get an
+        // underside instead of a plinth sunk into the terrain.
+        const minHeight = Math.min(b.minHeight ?? 0, height - 0.5);
+        const floating = minHeight > 0.05;
+        const bottom = floating ? base + minHeight : base - (base !== 0 ? PLINTH_DEPTH_M : 0);
         const top = base + height;
         const vBottom = bottom - base;
         count++;
@@ -120,59 +124,70 @@ export function buildCityGeometry(
         _roof.setHex(ROOF_PALETTE[Math.floor(hashUnit(b.id + 'r') * ROOF_PALETTE.length)]);
         _roof.convertSRGBToLinear();
 
-        // Normalise to counter-clockwise winding so outward normals are (dy, -dx)
+        // Outer ring counter-clockwise, courtyard rings clockwise: then the
+        // building's outward wall normal is always (dy, -dx) for every ring.
         const verts = signedArea(src) >= 0 ? src : [...src].reverse();
+        const holes = (b.holes ?? [])
+            .filter(h => h.length >= 3)
+            .map(h => (signedArea(h) <= 0 ? h : [...h].reverse()));
+        const showUnderside = floating && !b.stacked;
+        const edgeBase = floating ? bottom : base + 0.05;
 
-        // --- Walls ---
-        let u = 0;
-        for (let i = 0; i < n; i++) {
-            const a = verts[i];
-            const c = verts[(i + 1) % n];
-            const dx = c.x - a.x;
-            const dy = c.y - a.y;
-            const len = Math.sqrt(dx * dx + dy * dy);
-            if (len < 1e-3) continue;
-            const nx = dy / len;
-            const ny = -dx / len;
-            const u0 = u;
-            const u1 = u + len;
-            // Two CCW triangles seen from outside: a0, c0, c1  and  a0, c1, a1
-            w.vertex(a.x, a.y, bottom, nx, ny, 0, _c, u0, vBottom, height, seed);
-            w.vertex(c.x, c.y, bottom, nx, ny, 0, _c, u1, vBottom, height, seed);
-            w.vertex(c.x, c.y, top, nx, ny, 0, _c, u1, height, height, seed);
-            w.vertex(a.x, a.y, bottom, nx, ny, 0, _c, u0, vBottom, height, seed);
-            w.vertex(c.x, c.y, top, nx, ny, 0, _c, u1, height, height, seed);
-            w.vertex(a.x, a.y, top, nx, ny, 0, _c, u0, height, height, seed);
-            // Snap window bays so they restart on each wall at a consistent phase
-            u = Math.ceil(u1 / 3.0) * 3.0;
+        // --- Walls (outer facade + courtyard facades) ---
+        for (const ring of [verts, ...holes]) {
+            const rn = ring.length;
+            let u = 0;
+            for (let i = 0; i < rn; i++) {
+                const a = ring[i];
+                const c = ring[(i + 1) % rn];
+                const dx = c.x - a.x;
+                const dy = c.y - a.y;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                if (len < 1e-3) continue;
+                const nx = dy / len;
+                const ny = -dx / len;
+                const u0 = u;
+                const u1 = u + len;
+                // Two CCW triangles seen from outside: a0, c0, c1  and  a0, c1, a1
+                w.vertex(a.x, a.y, bottom, nx, ny, 0, _c, u0, vBottom, height, seed);
+                w.vertex(c.x, c.y, bottom, nx, ny, 0, _c, u1, vBottom, height, seed);
+                w.vertex(c.x, c.y, top, nx, ny, 0, _c, u1, height, height, seed);
+                w.vertex(a.x, a.y, bottom, nx, ny, 0, _c, u0, vBottom, height, seed);
+                w.vertex(c.x, c.y, top, nx, ny, 0, _c, u1, height, height, seed);
+                w.vertex(a.x, a.y, top, nx, ny, 0, _c, u0, height, height, seed);
+                // Snap window bays so they restart on each wall at a consistent phase
+                u = Math.ceil(u1 / 3.0) * 3.0;
 
-            // Roof + base outline edges
-            edges.push(a.x, a.y, top, c.x, c.y, top);
-            edges.push(a.x, a.y, base + 0.05, c.x, c.y, base + 0.05);
-        }
+                // Roof + base outline edges
+                edges.push(a.x, a.y, top, c.x, c.y, top);
+                edges.push(a.x, a.y, edgeBase, c.x, c.y, edgeBase);
+            }
 
-        // Vertical corner edges only where the outline actually turns
-        for (let i = 0; i < n; i++) {
-            const prev = verts[(i - 1 + n) % n];
-            const cur = verts[i];
-            const next = verts[(i + 1) % n];
-            const a1 = Math.atan2(cur.y - prev.y, cur.x - prev.x);
-            const a2 = Math.atan2(next.y - cur.y, next.x - cur.x);
-            let turn = Math.abs(a2 - a1);
-            if (turn > Math.PI) turn = 2 * Math.PI - turn;
-            if (turn >= CORNER_EDGE_MIN_TURN) {
-                edges.push(cur.x, cur.y, base, cur.x, cur.y, top);
+            // Vertical corner edges only where the outline actually turns
+            for (let i = 0; i < rn; i++) {
+                const prev = ring[(i - 1 + rn) % rn];
+                const cur = ring[i];
+                const next = ring[(i + 1) % rn];
+                const a1 = Math.atan2(cur.y - prev.y, cur.x - prev.x);
+                const a2 = Math.atan2(next.y - cur.y, next.x - cur.x);
+                let turn = Math.abs(a2 - a1);
+                if (turn > Math.PI) turn = 2 * Math.PI - turn;
+                if (turn >= CORNER_EDGE_MIN_TURN) {
+                    edges.push(cur.x, cur.y, edgeBase, cur.x, cur.y, top);
+                }
             }
         }
 
-        // --- Roof cap ---
+        // --- Roof cap (courtyards cut out) ---
         const contour = verts.map(p => new THREE.Vector2(p.x, p.y));
-        const faces = THREE.ShapeUtils.triangulateShape(contour, []);
+        const holeContours = holes.map(h => h.map(p => new THREE.Vector2(p.x, p.y)));
+        const all = holes.length ? verts.concat(...holes) : verts;
+        const faces = THREE.ShapeUtils.triangulateShape(contour, holeContours);
         for (let fi = 0; fi < faces.length; fi++) {
             let [ia, ib, ic] = faces[fi];
-            const pa = verts[ia];
-            const pb = verts[ib];
-            const pc = verts[ic];
+            const pa = all[ia];
+            const pb = all[ib];
+            const pc = all[ic];
             const cross = (pb.x - pa.x) * (pc.y - pa.y) - (pb.y - pa.y) * (pc.x - pa.x);
             if (cross < 0) {
                 const t = ib;
@@ -180,8 +195,15 @@ export function buildCityGeometry(
                 ic = t;
             }
             for (const idx of [ia, ib, ic]) {
-                const p = verts[idx];
+                const p = all[idx];
                 w.vertex(p.x, p.y, top, 0, 0, 1, _roof, p.x, ROOF_SENTINEL, height, seed);
+            }
+            if (showUnderside) {
+                // Underside (reversed winding, facing down) for overhangs / bridges
+                for (const idx of [ia, ic, ib]) {
+                    const p = all[idx];
+                    w.vertex(p.x, p.y, bottom, 0, 0, -1, _roof, p.x, ROOF_SENTINEL, height, seed);
+                }
             }
         }
     }

@@ -86,6 +86,11 @@ export interface Building {
     material: Material;
     /** Polygon vertices in local coordinates (meters) */
     vertices: Point2D[];
+    /**
+     * Inner rings (courtyards) from OSM multipolygon relations. Rendering cuts
+     * them out; physics / RF currently treat the outer ring as solid.
+     */
+    holes?: Point2D[][];
     /** Pre-computed bounding box for fast culling */
     bounds: BoundingBox;
     /** Original OSM properties if available */
@@ -94,6 +99,14 @@ export interface Building {
     height?: number;
     /** Where `height` came from: explicit OSM tag, floor count, or deterministic estimate. */
     heightSource?: BuildingHeightSource;
+    /** Height of the volume's underside (OSM `min_height`); > 0 for overhangs and bridges. */
+    minHeight?: number;
+    /** True for OSM `building:part` volumes (render-only; physics uses outlines). */
+    isPart?: boolean;
+    /** True for an outline that contains `building:part` volumes (rendered via its parts). */
+    hasParts?: boolean;
+    /** Render-only: volume sits on another volume's roof (draw no underside). */
+    stacked?: boolean;
 }
 
 export type BuildingHeightSource = 'tag' | 'levels' | 'estimate';

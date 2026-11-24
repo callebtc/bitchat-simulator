@@ -20,7 +20,9 @@ const OVERPASS_MIRRORS = [
 
 const CACHE_PREFIX = 'bitchat_osm_cache_';
 // v2: adds roads / parks / water map context and `properties.kind`
-const CACHE_VERSION = 2;
+// v3: keeps `building:part` + min_height so parts don't z-fight their outlines
+// v4: multipolygon building relations assembled with courtyard holes
+const CACHE_VERSION = 4;
 
 interface CacheEntry {
     version: number;
@@ -86,9 +88,12 @@ type OsmTags = Record<string, string>;
 
 const SKIPPED_HIGHWAYS = new Set(['construction', 'proposed', 'corridor', 'elevator', 'platform', 'bus_stop']);
 
-/** Classify a way by its tags. Untagged ways are building-relation members. */
+/**
+ * Classify a way by its tags. Untagged ways are multipolygon relation members
+ * (outer walls or courtyards); they are assembled with their relation instead.
+ */
 export function classifyOsmWay(tags: OsmTags | undefined): OSMFeatureKind | null {
-    if (!tags || Object.keys(tags).length === 0) return 'building';
+    if (!tags || Object.keys(tags).length === 0) return null;
     if (tags.building || tags['building:part']) return 'building';
     if (tags.highway) {
         if (SKIPPED_HIGHWAYS.has(tags.highway)) return null;
@@ -138,6 +143,60 @@ export interface OverpassElement {
     lon?: number;
     nodes?: number[];
     tags?: OsmTags;
+    members?: Array<{ type: string; ref: number; role?: string }>;
+}
+
+/**
+ * Join open way segments into closed rings by matching endpoints (OSM
+ * multipolygon outers / inners are often split across several ways).
+ */
+export function assembleRings(segments: number[][]): number[][] {
+    const rings: number[][] = [];
+    const open = segments.filter(s => s.length >= 2).map(s => [...s]);
+    while (open.length > 0) {
+        const ring = open.shift() as number[];
+        let progressed = true;
+        while (ring[0] !== ring[ring.length - 1] && progressed) {
+            progressed = false;
+            const tail = ring[ring.length - 1];
+            for (let i = 0; i < open.length; i++) {
+                const seg = open[i];
+                if (seg[0] === tail) ring.push(...seg.slice(1));
+                else if (seg[seg.length - 1] === tail) ring.push(...seg.slice(0, -1).reverse());
+                else continue;
+                open.splice(i, 1);
+                progressed = true;
+                break;
+            }
+        }
+        if (ring.length >= 4 && ring[0] === ring[ring.length - 1]) rings.push(ring);
+    }
+    return rings;
+}
+
+function lonLatInRing(pt: number[], ring: number[][]): boolean {
+    let inside = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+        const [xi, yi] = ring[i];
+        const [xj, yj] = ring[j];
+        if (yi > pt[1] !== yj > pt[1] && pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi) inside = !inside;
+    }
+    return inside;
+}
+
+function buildingProperties(kind: OSMFeatureKind, id: number, tags: OsmTags): Record<string, unknown> {
+    return {
+        kind,
+        osmId: id,
+        building: tags.building || tags['building:part'] || 'yes',
+        // Simple 3D Buildings: parts describe the 3D shape inside an outline
+        part: Boolean(tags['building:part']) && !tags.building,
+        name: tags.name,
+        height: tags.height,
+        levels: tags['building:levels'],
+        min_height: tags.min_height,
+        min_level: tags['building:min_level'],
+    };
 }
 
 /**
@@ -162,8 +221,49 @@ export function parseOverpassResponse(data: { elements?: OverpassElement[] }): G
         }
     }
 
+    const coordsOf = (nodeIds: number[]): number[][] | null => {
+        const out: number[][] = [];
+        for (const id of nodeIds) {
+            const c = nodes.get(id);
+            if (!c) return null;
+            out.push(c);
+        }
+        return out;
+    };
+
+    // Multipolygon building relations → one polygon per outer ring, with
+    // courtyards (inner rings) as holes. Member ways are consumed here.
+    const consumedWays = new Set<number>();
+    for (const element of elements) {
+        if (element.type !== 'relation' || !element.members) continue;
+        const tags = element.tags ?? {};
+        if (!tags.building && !tags['building:part']) continue;
+        const outerSegs: number[][] = [];
+        const innerSegs: number[][] = [];
+        for (const m of element.members) {
+            if (m.type !== 'way') continue;
+            const way = ways.get(m.ref);
+            if (!way?.nodes) continue;
+            (m.role === 'inner' ? innerSegs : outerSegs).push(way.nodes);
+            // A member way that carries its own building tags stays a building
+            if (!way.tags?.building && !way.tags?.['building:part']) consumedWays.add(m.ref);
+        }
+        const outers = assembleRings(outerSegs).map(coordsOf).filter((r): r is number[][] => r !== null);
+        const inners = assembleRings(innerSegs).map(coordsOf).filter((r): r is number[][] => r !== null);
+        const kind: OSMFeatureKind = 'building';
+        for (const outer of outers) {
+            const holes = inners.filter(inner => lonLatInRing(inner[0], outer));
+            features.push({
+                type: 'Feature',
+                geometry: { type: 'Polygon', coordinates: [outer, ...holes] } as GeoJSONPolygon,
+                properties: buildingProperties(kind, element.id, tags),
+            });
+        }
+    }
+
     for (const element of ways.values()) {
         if (!element.nodes || element.nodes.length < 2) continue;
+        if (consumedWays.has(element.id)) continue;
         const kind = classifyOsmWay(element.tags);
         if (!kind) continue;
 
@@ -203,14 +303,7 @@ export function parseOverpassResponse(data: { elements?: OverpassElement[] }): G
             features.push({
                 type: 'Feature',
                 geometry: { type: 'Polygon', coordinates: [coordinates] } as GeoJSONPolygon,
-                properties: {
-                    kind,
-                    osmId: element.id,
-                    building: tags.building || 'yes',
-                    name: tags.name,
-                    height: tags.height,
-                    levels: tags['building:levels'],
-                },
+                properties: buildingProperties(kind, element.id, tags),
             });
         } else {
             features.push({

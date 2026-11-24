@@ -84,6 +84,7 @@ When adding or revising simulated protocol behavior, cite the corresponding upst
     - `LineOfSight.ts`: Ray-polygon intersection, wall/interior attenuation breakdown, clearance checks, and outward edge normals.
     - `OSMFetcher.ts`: Multi-mirror Overpass API fetcher (per-mirror timeout + failover) for OSM buildings plus render-only roads / parks / water, tagged via `properties.kind`, with `localStorage` caching.
     - `BuildingHeights.ts`: Roof heights from OSM `height` / `building:levels` tags with deterministic whole-storey estimates as fallback (`Building.height`, `heightSource`). Heights are currently visual; RF attenuation is still 2D.
+    - Building data split: `getBuildings()` = footprint outlines (physics, RF, pathfinding; multipolygon courtyards in `holes` are currently treated as solid); `getRenderVolumes()` = what is drawn in 3D (`building:part`s replace their outline, hidden nested volumes are dropped and taller ones start at the container roof) so no two faces are ever coplanar.
     - `Terrain.ts`: Headless `Heightfield` (bilinear `sample`, `minUnder`), Terrarium DEM decoding and slippy-tile math. Tiles are fetched in `ui/context/TerrainContext.tsx`; elevation is render-only (people, links, buildings and the baked street map drape on it).
     - `PathFinder.ts`: Visibility graph over inflated building polygons (`2.5 m` padding, `150 m` max edge), chunked async construction, A* pathfinding, and `localStorage` caching.
 

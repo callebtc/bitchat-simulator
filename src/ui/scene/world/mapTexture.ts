@@ -125,7 +125,21 @@ export function bakeMapTexture(
     }
     g.setLineDash([]);
 
-    for (const b of buildings) fillPoly(b.vertices, PLINTH);
+    // Building plinths; courtyards (holes) stay open ground via even-odd fill
+    for (const b of buildings) {
+        if (!b.holes?.length) {
+            fillPoly(b.vertices, PLINTH);
+            continue;
+        }
+        g.beginPath();
+        for (const ring of [b.vertices, ...b.holes]) {
+            g.moveTo(px(ring[0].x), py(ring[0].y));
+            for (let i = 1; i < ring.length; i++) g.lineTo(px(ring[i].x), py(ring[i].y));
+            g.closePath();
+        }
+        g.fillStyle = PLINTH;
+        g.fill('evenodd');
+    }
 
     const tex = new THREE.CanvasTexture(canvas);
     tex.colorSpace = THREE.SRGBColorSpace;

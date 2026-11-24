@@ -89,6 +89,18 @@ export function polygonArea(vertices: Point2D[]): number {
 const clampHeight = (h: number): number => Math.min(MAX_HEIGHT_M, Math.max(MIN_HEIGHT_M, h));
 
 /**
+ * Underside height of a volume (OSM `min_height`, else `building:min_level`
+ * × storey height, else 0). Used for overhangs, bridges and stacked parts.
+ */
+export function resolveMinHeight(properties: Record<string, unknown> | undefined): number {
+    const props = properties ?? {};
+    const tagged = parseOsmLength(props.min_height ?? props.minHeight);
+    if (tagged !== null) return Math.min(tagged, MAX_HEIGHT_M);
+    const levels = parseOsmLength(props.min_level ?? props['building:min_level']);
+    return levels !== null ? levels * STOREY_HEIGHT_M : 0;
+}
+
+/**
  * Resolve a building's roof height from OSM properties, falling back to a
  * deterministic estimate based on building type and footprint area.
  */

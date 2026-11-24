@@ -79,9 +79,9 @@ export const EnvironmentSection: React.FC = () => {
         let sumH = 0;
         let tagged = 0;
         let footprint = 0;
+        for (const v of engine.environment.getRenderVolumes()) tallest = Math.max(tallest, v.height ?? 0);
         for (const b of buildings) {
             const h = b.height ?? 0;
-            tallest = Math.max(tallest, h);
             sumH += h;
             if (b.heightSource !== 'estimate') tagged++;
             footprint += polygonArea(b.vertices);

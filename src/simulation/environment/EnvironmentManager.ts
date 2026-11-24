@@ -22,9 +22,9 @@ import {
     latLonToLocal,
     calculateBounds,
 } from './types';
-import { resolveBuildingHeight } from './BuildingHeights';
+import { resolveBuildingHeight, resolveMinHeight } from './BuildingHeights';
 
-import { getFirstIntersection, projectOntoSurface } from './LineOfSight';
+import { getFirstIntersection, pointInPolygon, projectOntoSurface } from './LineOfSight';
 
 /** Result of movement resolution with collision detection */
 export interface MovementResult {
@@ -72,8 +72,19 @@ function roadClassFor(highway: unknown): RoadClass {
     }
 }
 
+/** Order-independent footprint key (10 cm grid) used to drop duplicate OSM ways. */
+function footprintKey(vertices: Point2D[]): string {
+    return vertices
+        .map(v => `${Math.round(v.x * 10)},${Math.round(v.y * 10)}`)
+        .sort()
+        .join('|');
+}
+
 export class EnvironmentManager {
     private buildings: Building[] = [];
+    /** OSM `building:part` volumes (render-only; see `getRenderVolumes`). */
+    private buildingParts: Building[] = [];
+    private renderVolumes: Building[] = [];
     private mapContext: MapContext = { roads: [], areas: [] };
     private buildingById: Map<string, Building> = new Map();
     private bounds: EnvironmentBounds | null = null;
@@ -111,8 +122,12 @@ export class EnvironmentManager {
         const refLon = centerLon ?? (minLng + maxLng) / 2;
 
         this.buildings = [];
+        this.buildingParts = [];
         this.mapContext = { roads: [], areas: [] };
         let buildingId = 0;
+        let partId = 0;
+        const seenOutlines = new Set<string>();
+        const seenParts = new Set<string>();
 
         for (const feature of geojson.features) {
             if (!isBuildingFeature(feature)) {
@@ -138,7 +153,27 @@ export class EnvironmentManager {
 
             if (vertices.length < 3) continue;
 
-            const id = `building-${buildingId++}`;
+            const holes: Point2D[][] = [];
+            const rings = feature.geometry.coordinates as number[][][];
+            for (let r = 1; r < rings.length; r++) {
+                const hole = rings[r].map(([lng, lat]) => latLonToLocal(lat, lng, refLat, refLon));
+                if (hole.length > 1) {
+                    const f = hole[0];
+                    const l = hole[hole.length - 1];
+                    if (Math.abs(f.x - l.x) < 0.01 && Math.abs(f.y - l.y) < 0.01) hole.pop();
+                }
+                if (hole.length >= 3) holes.push(hole);
+            }
+
+            // Duplicate ways (e.g. a relation member re-tagged as its own building)
+            // would render as coplanar walls that z-fight; keep the first copy.
+            const isPart = feature.properties?.part === true;
+            const key = footprintKey(vertices);
+            const seen = isPart ? seenParts : seenOutlines;
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            const id = isPart ? `part-${partId++}` : `building-${buildingId++}`;
             const osmId = feature.properties?.osmId;
             const { height, source } = resolveBuildingHeight(
                 feature.properties,
@@ -154,12 +189,18 @@ export class EnvironmentManager {
                 properties: feature.properties,
                 height,
                 heightSource: source,
+                minHeight: resolveMinHeight(feature.properties),
+                isPart,
+                holes: holes.length ? holes : undefined,
             };
 
-            this.buildings.push(building);
+            if (isPart) this.buildingParts.push(building);
+            else this.buildings.push(building);
         }
 
+        this.markOutlinesWithParts();
         this.rebuildSpatialIndex();
+        this.renderVolumes = this.computeRenderVolumes();
 
         const localBounds = this.calculateTotalBounds();
 
@@ -208,6 +249,97 @@ export class EnvironmentManager {
         this.mapContext.areas.push(area);
     }
 
+    /**
+     * Flag outlines that contain `building:part` volumes. Per the OSM Simple 3D
+     * Buildings scheme the outline then only describes the footprint, and the
+     * parts describe the 3D shape — rendering both makes their shared walls
+     * z-fight.
+     */
+    private markOutlinesWithParts(): void {
+        if (this.buildingParts.length === 0) return;
+        for (const part of this.buildingParts) {
+            let cx = 0;
+            let cy = 0;
+            for (const v of part.vertices) {
+                cx += v.x;
+                cy += v.y;
+            }
+            cx /= part.vertices.length;
+            cy /= part.vertices.length;
+            for (const outline of this.buildings) {
+                const b = outline.bounds;
+                if (cx < b.minX || cx > b.maxX || cy < b.minY || cy > b.maxY) continue;
+                if (pointInPolygon({ x: cx, y: cy }, outline.vertices)) {
+                    outline.hasParts = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    /** OSM `building:part` volumes (render-only). */
+    getBuildingParts(): Building[] {
+        return this.buildingParts;
+    }
+
+    /**
+     * Volumes to draw in 3D: building parts, plus every outline that has no
+     * parts. Physics, RF and pathfinding keep using `getBuildings()` (outlines).
+     */
+    getRenderVolumes(): Building[] {
+        return this.renderVolumes;
+    }
+
+    /**
+     * Resolve overlapping volumes so no two faces are ever coplanar (which
+     * z-fights and flickers as the camera moves):
+     *  - outlines with `building:part`s are replaced by their parts;
+     *  - a volume nested inside a larger one is dropped if it doesn't rise
+     *    above the container's roof (it would be hidden or share the roof plane);
+     *  - otherwise only its portion above the container's roof is drawn.
+     */
+    private computeRenderVolumes(): Building[] {
+        const candidates = this.buildings.filter(b => !b.hasParts).concat(this.buildingParts);
+        const areaOf = (v: Point2D[]): number => {
+            let a = 0;
+            for (let i = 0; i < v.length; i++) {
+                const p = v[i];
+                const q = v[(i + 1) % v.length];
+                a += p.x * q.y - q.x * p.y;
+            }
+            return Math.abs(a) / 2;
+        };
+        const areas = candidates.map(b => areaOf(b.vertices));
+        const out: Building[] = [];
+        for (let i = 0; i < candidates.length; i++) {
+            const b = candidates[i];
+            let cx = 0;
+            let cy = 0;
+            for (const v of b.vertices) {
+                cx += v.x;
+                cy += v.y;
+            }
+            cx /= b.vertices.length;
+            cy /= b.vertices.length;
+            let containerTop = -Infinity;
+            for (let j = 0; j < candidates.length; j++) {
+                if (j === i || areas[j] <= areas[i]) continue;
+                const o = candidates[j];
+                const bb = o.bounds;
+                if (cx < bb.minX || cx > bb.maxX || cy < bb.minY || cy > bb.maxY) continue;
+                if (!pointInPolygon({ x: cx, y: cy }, o.vertices)) continue;
+                if (o.holes?.some(h => pointInPolygon({ x: cx, y: cy }, h))) continue;
+                containerTop = Math.max(containerTop, o.height ?? 0);
+            }
+            if (containerTop === -Infinity) {
+                out.push(b);
+            } else if ((b.height ?? 0) > containerTop + 0.3) {
+                out.push({ ...b, minHeight: Math.max(b.minHeight ?? 0, containerTop), stacked: true });
+            }
+        }
+        return out;
+    }
+
     /** Render-only roads / parks / water loaded alongside buildings. */
     getMapContext(): MapContext {
         return this.mapContext;
@@ -218,6 +350,8 @@ export class EnvironmentManager {
      */
     loadFromData(data: EnvironmentData): void {
         this.buildings = data.buildings;
+        this.buildingParts = [];
+        this.renderVolumes = data.buildings;
         this.bounds = data.bounds;
         this.rebuildSpatialIndex();
     }
@@ -227,6 +361,8 @@ export class EnvironmentManager {
      */
     clear(): void {
         this.buildings = [];
+        this.buildingParts = [];
+        this.renderVolumes = [];
         this.mapContext = { roads: [], areas: [] };
         this.buildingById.clear();
         this.grid.clear();

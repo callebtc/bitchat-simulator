@@ -59,7 +59,7 @@ const SimWorld: React.FC = () => {
                     />
                 )}
                 <CityLayer
-                    buildings={env.buildings}
+                    buildings={env.volumes}
                     terrain={field}
                     style={buildingStyle}
                     night={night}

@@ -4,7 +4,10 @@ import { useSimulation } from '../../context/SimulationContext';
 import { Building, MapContext } from '../../../simulation/environment';
 
 export interface EnvironmentSnapshot {
+    /** Footprint outlines (physics, map plinths). */
     buildings: Building[];
+    /** 3D volumes to draw: building parts + outlines without parts. */
+    volumes: Building[];
     mapContext: MapContext;
     /** Increments every time the environment is (re)loaded or cleared. */
     version: number;
@@ -15,6 +18,7 @@ export function useEnvironmentSnapshot(): EnvironmentSnapshot {
     const engine = useSimulation();
     const [snapshot, setSnapshot] = useState<EnvironmentSnapshot>(() => ({
         buildings: engine.environment.getBuildings(),
+        volumes: engine.environment.getRenderVolumes(),
         mapContext: engine.environment.getMapContext(),
         version: 0,
     }));
@@ -23,6 +27,7 @@ export function useEnvironmentSnapshot(): EnvironmentSnapshot {
         const refresh = () =>
             setSnapshot(prev => ({
                 buildings: [...engine.environment.getBuildings()],
+                volumes: engine.environment.getRenderVolumes(),
                 mapContext: engine.environment.getMapContext(),
                 version: prev.version + 1,
             }));

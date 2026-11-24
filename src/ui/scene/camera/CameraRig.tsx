@@ -362,13 +362,28 @@ export const CameraRig: React.FC = () => {
 
         if (mode !== 'fpv') c.update();
 
+        // Depth precision: a fixed 0.5 m near plane wastes most of the depth
+        // buffer on the first metres, so distant coplanar-ish surfaces (facades,
+        // building parts) z-fight while the camera moves. Scale the near plane
+        // with viewing distance; first-person keeps a short one for close people.
+        const persp = camera as THREE.PerspectiveCamera;
+        const viewDist = camera.position.distanceTo(target);
+        const heightAboveGround = camera.position.y - heightAt(camera.position.x, -camera.position.z);
+        const near =
+            mode === 'fpv'
+                ? 0.1
+                : THREE.MathUtils.clamp(Math.min(viewDist, heightAboveGround) * 0.02, 0.3, 8);
+        if (Math.abs(persp.near - near) / persp.near > 0.15) {
+            persp.near = near;
+            persp.updateProjectionMatrix();
+        }
+
         // ---- Telemetry for HUD (compass / scale) ----
         const tel = telemetryRef.current;
         const dist = camera.position.distanceTo(target);
         tel.distance = dist;
         tel.heading = worldHeading(camera.position, target);
         tel.pitch = Math.asin(THREE.MathUtils.clamp((camera.position.y - target.y) / Math.max(dist, 1e-3), -1, 1));
-        const persp = camera as THREE.PerspectiveCamera;
         const viewHeightAtTarget = 2 * dist * Math.tan(THREE.MathUtils.degToRad(persp.fov) / 2);
         tel.metersPer100px = (viewHeightAtTarget / Math.max(size.height, 1)) * 100;
         tel.targetX = target.x;
