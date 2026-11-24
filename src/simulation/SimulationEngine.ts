@@ -1,4 +1,5 @@
 import { BitchatPerson } from './BitchatPerson';
+import { BitchatDevice } from './BitchatDevice';
 import { SpatialManager } from './SpatialManager';
 import { EventBus } from '../events/EventBus';
 import { BitchatConnection } from './BitchatConnection';
@@ -9,15 +10,38 @@ import { SeededRandom } from './SeededRandom';
 import { EventScheduler } from './EventScheduler';
 import { TelemetryCollector } from './TelemetryCollector';
 import { DeviceRuntime } from './BitchatDevice';
+import { RadioMedium, RadioMediumConfig } from './RadioMedium';
 
 const CONNECT_RADIUS = 100;
 const DISCONNECT_RADIUS = 110;
 /** Padding distance from building walls for pathfinding (meters) */
 const PATHFINDING_PADDING = 2.5;
 
+// Android MeshConnectionTracker retry & GATT setup constants
+const CONNECTION_RETRY_DELAY_MS = 5_000;
+const MAX_CONNECTION_ATTEMPTS = 3;
+const CONNECTION_ATTEMPT_EXPIRY_MS = CONNECTION_RETRY_DELAY_MS * 2;
+const DEFAULT_GATT_HANDSHAKE_MS = 500; // 200ms MTU(517) + 100ms discover/CCCD + 200ms ready
+
 export interface SimulationEngineOptions {
     /** Deterministic PRNG seed (default: 0x5eed1234) */
     seed?: number;
+    /** Staged BLE GATT handshake duration in ms (default: 500 ms matching Android) */
+    gattHandshakeMs?: number;
+    /** Allow concurrent dual-role BLE links during scan races (default: true) */
+    allowDualRoleLinks?: boolean;
+    /** Optional RadioMedium overrides (e.g. disable RF interference in isolated tests) */
+    radioMediumConfig?: Partial<RadioMediumConfig>;
+}
+
+interface PendingBleHandshake {
+    conn: BitchatConnectionBLE;
+    finalizeAt: number;
+}
+
+interface ConnectionAttemptRecord {
+    attempts: number;
+    lastAttemptMs: number;
 }
 
 export class SimulationEngine {
@@ -29,6 +53,7 @@ export class SimulationEngine {
     rng: SeededRandom;
     scheduler: EventScheduler;
     telemetry: TelemetryCollector;
+    radioMedium: RadioMedium;
 
     /** Monotonic simulation clock in milliseconds (decoupled from wall clock). */
     simTimeMs: number = 0;
@@ -39,19 +64,25 @@ export class SimulationEngine {
     readonly FIXED_TIME_STEP = 0.05; // 50ms physics/RSSI tick
     private people: Map<string, BitchatPerson> = new Map();
 
-    // Active connections keyed by connection.id
+    // Active connections keyed by directed linkID ("BLE:<client>-><server>" or "WIFI_AWARE:...")
     private globalConnections: Map<string, BitchatConnection> = new Map();
-    // Pending connections waiting for handshake/stability check
-    private pendingConnections: Map<string, { conn: BitchatConnectionBLE; finalizeAt: number }> =
-        new Map();
+    // Pending BLE GATT handshakes keyed by directed linkID
+    private pendingConnections: Map<string, PendingBleHandshake> = new Map();
+    // MeshConnectionTracker retry/backoff state keyed by directed linkID
+    private attemptTracker: Map<string, ConnectionAttemptRecord> = new Map();
 
     private readonly initialSeed: number;
+    readonly gattHandshakeMs: number;
+    readonly allowDualRoleLinks: boolean;
 
     constructor(options: SimulationEngineOptions = {}) {
         this.initialSeed = options.seed ?? 0x5eed1234;
+        this.gattHandshakeMs = options.gattHandshakeMs ?? DEFAULT_GATT_HANDSHAKE_MS;
+        this.allowDualRoleLinks = options.allowDualRoleLinks ?? true;
         this.rng = new SeededRandom(this.initialSeed);
         this.scheduler = new EventScheduler();
         this.telemetry = new TelemetryCollector();
+        this.radioMedium = new RadioMedium(options.radioMediumConfig);
         this.spatial = new SpatialManager();
         this.events = new EventBus();
         this.logManager = new LogManager();
@@ -134,6 +165,7 @@ export class SimulationEngine {
         });
         this.globalConnections.clear();
         this.pendingConnections.clear();
+        this.attemptTracker.clear();
 
         const ids = Array.from(this.people.keys());
         ids.forEach(id => {
@@ -145,6 +177,7 @@ export class SimulationEngine {
         this.rng = new SeededRandom(newSeed ?? this.initialSeed);
         this.scheduler.clear(0);
         this.telemetry.reset();
+        this.radioMedium.reset();
         this.logManager.clear();
 
         this.events.emit('reset', undefined);
@@ -164,7 +197,6 @@ export class SimulationEngine {
 
     /**
      * Advance the simulation deterministically by `durationMs` in fixed increments.
-     * Ideal for headless benchmarks and reproducible unit tests.
      */
     runFor(durationMs: number, stepMs: number = 50): void {
         const targetEnd = this.simTimeMs + Math.max(0, durationMs);
@@ -178,15 +210,14 @@ export class SimulationEngine {
     }
 
     /**
-     * Advance one simulation step.
-     * Uses monotonic simTimeMs (never wall clock).
+     * Advance one simulation step using monotonic simTimeMs (never wall clock).
      */
     step(dt: number, nowOverride?: number): void {
         const targetNow =
             nowOverride !== undefined ? nowOverride : this.simTimeMs + dt * 1000;
         this.simTimeMs = targetNow;
 
-        // 1. Drain any sub-tick scheduled protocol events up to targetNow
+        // 1. Drain sub-tick scheduled protocol/GATT events up to targetNow
         this.scheduler.drainUntil(targetNow);
         this.simTimeMs = targetNow;
 
@@ -199,7 +230,7 @@ export class SimulationEngine {
         // 3. Update Spatial Grid
         this.spatial.updateAll();
 
-        // 4. Update Connections (Latency queue + RSSI)
+        // 4. Update Connections (RSSI + staged handshakes + discovery)
         this.updateConnectionsRSSI(targetNow);
         this.updatePendingConnections(targetNow);
         this.updateConnectivity(targetNow);
@@ -209,6 +240,24 @@ export class SimulationEngine {
         this.simTimeMs = targetNow;
 
         this.events.emit('tick', this.people);
+    }
+
+    private isAttemptAllowed(directedKey: string, now: number): boolean {
+        const rec = this.attemptTracker.get(directedKey);
+        if (!rec) return true;
+        const elapsed = now - rec.lastAttemptMs;
+        if (elapsed > CONNECTION_ATTEMPT_EXPIRY_MS) {
+            this.attemptTracker.delete(directedKey);
+            return true;
+        }
+        return rec.attempts < MAX_CONNECTION_ATTEMPTS && elapsed > CONNECTION_RETRY_DELAY_MS;
+    }
+
+    private recordAttempt(directedKey: string, now: number): void {
+        const rec = this.attemptTracker.get(directedKey);
+        const expired = rec ? now - rec.lastAttemptMs > CONNECTION_ATTEMPT_EXPIRY_MS : true;
+        const nextAttempts = expired ? 1 : (rec?.attempts ?? 0) + 1;
+        this.attemptTracker.set(directedKey, { attempts: nextAttempts, lastAttemptMs: now });
     }
 
     private updatePendingConnections(now: number): void {
@@ -255,75 +304,93 @@ export class SimulationEngine {
 
     private updateConnectivity(now: number): void {
         const peopleList = Array.from(this.people.values());
-        const processedPairs = new Set<string>();
 
-        for (const p1 of peopleList) {
-            const neighbors = this.spatial.getNeighbors(p1, DISCONNECT_RADIUS);
-
-            for (const p2 of neighbors) {
-                const key = this.getConnectionKey(p1.device.peerIDHex, p2.device.peerIDHex);
-                if (processedPairs.has(key)) continue;
-                processedPairs.add(key);
-
-                const existingConn = this.globalConnections.get(key);
-                const pendingConn = this.pendingConnections.get(key);
-
-                const dx = p1.position.x - p2.position.x;
-                const dy = p1.position.y - p2.position.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-
-                if (existingConn) {
-                    if (dist > DISCONNECT_RADIUS || !existingConn.isActive) {
-                        this.breakConnection(key, existingConn);
-                    }
-                } else if (pendingConn) {
-                    // Handled in updatePendingConnections
-                } else if (dist < CONNECT_RADIUS) {
-                    const estimatedRSSI = BitchatConnectionBLE.estimateRSSI(
-                        p1.position,
-                        p2.position,
-                        p1.device.bluetoothStrength,
-                        p2.device.bluetoothStrength,
-                        this.environment
-                    );
-                    if (estimatedRSSI <= RSSI_CONFIG.DISCONNECT_THRESHOLD) {
-                        continue;
-                    }
-
-                    let initiator: BitchatPerson | null = null;
-
-                    if (
-                        p1.device.isScanning &&
-                        p1.device.connectionManager.canAcceptConnection(true) &&
-                        p2.device.connectionManager.canAcceptConnection(false)
-                    ) {
-                        initiator = p1;
-                    } else if (
-                        p2.device.isScanning &&
-                        p2.device.connectionManager.canAcceptConnection(true) &&
-                        p1.device.connectionManager.canAcceptConnection(false)
-                    ) {
-                        initiator = p2;
-                    }
-
-                    if (initiator) {
-                        this.initiateConnection(key, p1, p2, initiator.device, now, estimatedRSSI);
-                    }
-                }
-            }
-        }
-
+        // 1. Evaluate active links for distance/closed disconnect
+        const toBreak: Array<{ key: string; conn: BitchatConnection }> = [];
         this.globalConnections.forEach((conn, key) => {
-            if (!processedPairs.has(key)) {
-                if (!conn.endpointA.position || !conn.endpointB.position) return;
-                const dx = conn.endpointA.position.x - conn.endpointB.position.x;
-                const dy = conn.endpointA.position.y - conn.endpointB.position.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist > DISCONNECT_RADIUS || !conn.isActive) {
-                    this.breakConnection(key, conn);
-                }
+            if (!conn.isActive) {
+                toBreak.push({ key, conn });
+                return;
+            }
+            if (!conn.endpointA.position || !conn.endpointB.position) return;
+            const dx = conn.endpointA.position.x - conn.endpointB.position.x;
+            const dy = conn.endpointA.position.y - conn.endpointB.position.y;
+            if (Math.sqrt(dx * dx + dy * dy) > DISCONNECT_RADIUS) {
+                toBreak.push({ key, conn });
             }
         });
+        for (const item of toBreak) {
+            this.breakConnection(item.key, item.conn);
+        }
+
+        // 2. Scanning discovery (directed client -> server evaluation, allowing realistic dual-role races)
+        for (const scanner of peopleList) {
+            if (!scanner.device.isScanning) continue;
+            if (!scanner.device.connectionManager.canAcceptConnection(true, 'BLE')) continue;
+
+            const scanRssiThreshold = scanner.device.getScanRssiThreshold();
+            const neighbors = this.spatial.getNeighbors(scanner, CONNECT_RADIUS);
+
+            for (const target of neighbors) {
+                const directedKey = this.getDirectedBleKey(
+                    scanner.device.peerIDHex,
+                    target.device.peerIDHex
+                );
+
+                // Already have this exact directed link active or pending
+                if (
+                    this.globalConnections.has(directedKey) ||
+                    this.pendingConnections.has(directedKey)
+                ) {
+                    continue;
+                }
+
+                // Android BluetoothGattClientManager checks service-data peerID against ALREADY established links.
+                // Note: if the reverse link is only *pending* (both devices scanning concurrently), a realistic
+                // dual-role scan race occurs when allowDualRoleLinks is enabled!
+                if (scanner.device.connectionManager.hasActiveConnectionToPeer(target.device.peerIDHex, 'BLE')) {
+                    continue;
+                }
+                const collapseDual = this.shouldCollapseDualLinks(scanner.device, target.device);
+                if (collapseDual) {
+                    const reverseKey = this.getDirectedBleKey(
+                        target.device.peerIDHex,
+                        scanner.device.peerIDHex
+                    );
+                    if (
+                        this.globalConnections.has(reverseKey) ||
+                        this.pendingConnections.has(reverseKey)
+                    ) {
+                        continue;
+                    }
+                }
+
+                if (!target.device.connectionManager.canAcceptConnection(false, 'BLE')) {
+                    continue;
+                }
+
+                if (!this.isAttemptAllowed(directedKey, now)) {
+                    continue;
+                }
+
+                const dx = scanner.position.x - target.position.x;
+                const dy = scanner.position.y - target.position.y;
+                if (Math.sqrt(dx * dx + dy * dy) >= CONNECT_RADIUS) continue;
+
+                const estimatedRSSI = BitchatConnectionBLE.estimateRSSI(
+                    scanner.position,
+                    target.position,
+                    scanner.device.bluetoothStrength,
+                    target.device.bluetoothStrength,
+                    this.environment
+                );
+                // Must pass both scanner's power-mode RSSI threshold AND minimum link floor
+                const minRssi = Math.max(scanRssiThreshold, RSSI_CONFIG.DISCONNECT_THRESHOLD);
+                if (estimatedRSSI <= minRssi) continue;
+
+                this.initiateConnection(directedKey, scanner, target, now, estimatedRSSI);
+            }
+        }
     }
 
     private loop = (): void => {
@@ -356,6 +423,14 @@ export class SimulationEngine {
         return Array.from(this.globalConnections.values());
     }
 
+    registerExternalConnection(conn: BitchatConnection): void {
+        this.globalConnections.set(conn.id, conn);
+    }
+
+    removeExternalConnection(key: string): void {
+        this.globalConnections.delete(key);
+    }
+
     private updateConnectionsRSSI(now: number): void {
         const connectionsToBreak: string[] = [];
 
@@ -384,23 +459,40 @@ export class SimulationEngine {
         }
     }
 
-    private getConnectionKey(id1: string, id2: string): string {
-        return id1 < id2 ? `${id1}-${id2}` : `${id2}-${id1}`;
+    private shouldCollapseDualLinks(a: BitchatDevice, b: BitchatDevice): boolean {
+        if (!this.allowDualRoleLinks) return true;
+        return Boolean(
+            a.appSimulator?.shouldCollapseDuplicateLinks?.() ||
+                b.appSimulator?.shouldCollapseDuplicateLinks?.()
+        );
+    }
+
+    private getDirectedBleKey(clientPeerHex: string, serverPeerHex: string): string {
+        return `BLE:${clientPeerHex}->${serverPeerHex}`;
     }
 
     private initiateConnection(
-        key: string,
-        p1: BitchatPerson,
-        p2: BitchatPerson,
-        initiator: BitchatPerson['device'],
+        directedKey: string,
+        clientPerson: BitchatPerson,
+        serverPerson: BitchatPerson,
         now: number,
         initialRSSI: number
     ): void {
-        const connRng = this.rng.fork(`conn:${key}:${now}`);
-        const conn = new BitchatConnectionBLE(p1.device, p2.device, initiator, connRng);
+        this.recordAttempt(directedKey, now);
+
+        const connRng = this.rng.fork(`conn:${directedKey}:${now}`);
+        const conn = new BitchatConnectionBLE(
+            clientPerson.device,
+            serverPerson.device,
+            clientPerson.device,
+            connRng,
+            directedKey
+        );
         conn.setLogger(this.logManager);
         conn.environment = this.environment;
+        conn.radioMedium = this.radioMedium;
         conn.rssi = initialRSSI;
+        conn.isReady = false;
         conn.attachRuntime({
             clock: () => this.simTimeMs,
             scheduler: this.scheduler,
@@ -418,42 +510,54 @@ export class SimulationEngine {
         };
 
         this.telemetry.recordConnectionInitiated();
-        this.pendingConnections.set(key, {
+        this.pendingConnections.set(directedKey, {
             conn,
-            finalizeAt: now + 100,
+            finalizeAt: now + this.gattHandshakeMs,
         });
     }
 
     private finalizeConnection(key: string, conn: BitchatConnectionBLE, now: number): void {
-        const p1Dev = conn.endpointA;
-        const p2Dev = conn.endpointB;
-        const isP1Client = conn.initiator === p1Dev;
+        const clientDev = conn.getClient();
+        const serverDev = conn.getServer();
 
         if (
-            !p1Dev.connectionManager.canAcceptConnection(isP1Client) ||
-            !p2Dev.connectionManager.canAcceptConnection(!isP1Client)
+            !clientDev.connectionManager.canAcceptConnection(true, 'BLE') ||
+            !serverDev.connectionManager.canAcceptConnection(false, 'BLE')
         ) {
             this.telemetry.recordConnectionFailed();
             this.logManager.log(
                 'INFO',
                 'CONNECTION',
-                'Connection Failed (Slots Full during pending)',
+                'Connection Failed (Slots Full during GATT setup)',
                 conn.id
             );
             return;
         }
 
-        this.globalConnections.set(key, conn);
-        p1Dev.connectionManager.addConnection(conn);
-        p2Dev.connectionManager.addConnection(conn);
-        this.telemetry.recordConnectionFormed(false);
+        const reverseKey = this.getDirectedBleKey(serverDev.peerIDHex, clientDev.peerIDHex);
+        const isDualLink = this.globalConnections.has(reverseKey);
+        if (isDualLink && this.shouldCollapseDualLinks(clientDev, serverDev)) {
+            this.attemptTracker.delete(key);
+            return;
+        }
 
-        p1Dev.appSimulator?.onConnectionEstablished?.(conn, now);
-        p2Dev.appSimulator?.onConnectionEstablished?.(conn, now);
+        this.attemptTracker.delete(key);
+        conn.isReady = true;
+        conn.createdAtMs = now;
+        conn.lastActivityAtMs = now;
+        this.globalConnections.set(key, conn);
+
+        clientDev.connectionManager.addConnection(conn);
+        serverDev.connectionManager.addConnection(conn);
+        this.telemetry.recordConnectionFormed(isDualLink);
+
+        clientDev.appSimulator?.onConnectionEstablished?.(conn, now);
+        serverDev.appSimulator?.onConnectionEstablished?.(conn, now);
 
         this.events.emit('connection_formed', conn);
         this.logManager.log('INFO', 'CONNECTION', 'Connection Formed', conn.id, {
-            between: [p1Dev.nickname, p2Dev.nickname],
+            between: [clientDev.nickname, serverDev.nickname],
+            dualLink: isDualLink,
         });
     }
 

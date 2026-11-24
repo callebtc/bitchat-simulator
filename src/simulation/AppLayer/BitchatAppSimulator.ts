@@ -1,8 +1,10 @@
-import { BitchatDevice, DeviceRuntime, DeviceTickable, PowerMode } from '../BitchatDevice';
+import { BitchatDevice, DeviceRuntime, DeviceTickable } from '../BitchatDevice';
+import { resolveBlePowerProfile } from '../PowerProfile';
 import { BitchatConnection } from '../BitchatConnection';
 import { PeerManager } from './PeerManager';
 import { MeshGraph } from './MeshGraph';
 import { SecurityManager } from './SecurityManager';
+import { FRAGMENT_CONFIG, FragmentManager } from './FragmentManager';
 import {
     MeshPolicy,
     MeshPolicyPreset,
@@ -39,12 +41,14 @@ export class BitchatAppSimulator implements DeviceTickable {
     peerManager: PeerManager;
     meshGraph: MeshGraph;
     securityManager: SecurityManager;
+    fragmentManager: FragmentManager;
     policy: MeshPolicy;
     messages: ChatMessage[] = [];
 
     private lastAnnounceTime: number = -1;
     private currentAnnounceDelay: number = 0;
     private lastPeerCleanupTime: number = 0;
+    private lastFragmentCleanupTime: number = 0;
     private logger?: LogManager;
     private runtime?: DeviceRuntime;
     private currentNowMs: number = 0;
@@ -75,6 +79,7 @@ export class BitchatAppSimulator implements DeviceTickable {
         this.peerManager = new PeerManager();
         this.meshGraph = new MeshGraph();
         this.securityManager = new SecurityManager(device.peerIDHex);
+        this.fragmentManager = new FragmentManager();
 
         // Dynamic direct-link lookup matching Android BluetoothMeshService.kt:181
         this.peerManager.isPeerDirectlyConnected = (peerID: string) =>
@@ -94,6 +99,10 @@ export class BitchatAppSimulator implements DeviceTickable {
             typeof policyOrPreset === 'string'
                 ? createMeshPolicy(policyOrPreset)
                 : { ...policyOrPreset };
+    }
+
+    shouldCollapseDuplicateLinks(): boolean {
+        return this.policy.collapseDuplicatePeerLinks;
     }
 
     attachRuntime(runtime: DeviceRuntime): void {
@@ -192,11 +201,18 @@ export class BitchatAppSimulator implements DeviceTickable {
     tick(now: number): void {
         this.currentNowMs = now;
 
-        // 1. Periodic stale peer cleanup (Android: every 60s, evict > 180s; iOS: 15s / 60s)
+        // 1. Periodic stale peer & fragment cleanup
         if (now - this.lastPeerCleanupTime >= this.policy.peerCleanupIntervalMs) {
             this.lastPeerCleanupTime = now;
             this.peerManager.cleanupStalePeers(now, this.policy.stalePeerTimeoutMs);
             this.securityManager.cleanup(now, this.policy);
+        }
+        if (now - this.lastFragmentCleanupTime >= FRAGMENT_CONFIG.CLEANUP_INTERVAL_MS) {
+            this.lastFragmentCleanupTime = now;
+            const expired = this.fragmentManager.cleanupExpired(now);
+            for (let i = 0; i < expired; i++) {
+                this.runtime?.telemetry.recordDrop('fragment_timeout');
+            }
         }
 
         // 2. Periodic ANNOUNCE scheduler
@@ -231,16 +247,13 @@ export class BitchatAppSimulator implements DeviceTickable {
             const degree = this.device.connectionManager.getActiveConnections().length;
             return degree >= this.policy.highDegreeThreshold ? 30_000 : 15_000;
         }
-        // Android PowerManager.kt:338-345
-        switch (this.device.powerMode) {
-            case PowerMode.ECO:
-                return 60_000;
-            case PowerMode.NORMAL:
-                return this.policy.announceIntervalConnectedMs;
-            case PowerMode.PERFORMANCE:
-            default:
-                return this.policy.announceIntervalConnectedMs;
-        }
+        // Android PowerManager.kt:338-345 (PowerProfileResolver)
+        const profile = resolveBlePowerProfile(
+            this.device.powerMode,
+            this.device.isBackground,
+            hasDirectLinks
+        );
+        return profile.announceIntervalMs;
     }
 
     private log(message: string, details?: Record<string, unknown>, level: 'INFO' | 'DEBUG' = 'INFO'): void {
@@ -413,26 +426,49 @@ export class BitchatAppSimulator implements DeviceTickable {
             recipientIdHex
         );
 
-        // 1. Source-routed first-hop unicast
-        let sent = false;
-        if (firstHopHex) {
-            sent = this.sendToDirectPeer(firstHopHex, packet, nowMs);
+        // Fragment any outbound packet exceeding 512 B MTU (FragmentingPacketSender.kt: 20 ms pacing)
+        const frames = this.fragmentManager.createFragments(packet, this.device.rng);
+        if (frames.length === 0) return packet;
+
+        const sendFrame = (frame: BitchatPacket, fireNow: number): void => {
+            // Mark fragment seen so we don't re-relay our own fragments if looped
+            if (frame.type === MessageType.FRAGMENT) {
+                this.securityManager.markSeen(frame, fireNow, this.policy);
+            }
+            let sent = false;
+            if (firstHopHex) {
+                sent = this.sendToDirectPeer(firstHopHex, frame, fireNow);
+                if (!sent) {
+                    this.runtime?.telemetry.recordSourceRouteFallback();
+                }
+            }
+            if (!sent && recipientIdHex && this.policy.useDirectRecipientShortcut) {
+                sent = this.sendToDirectPeer(recipientIdHex, frame, fireNow);
+                if (sent) {
+                    this.runtime?.telemetry.recordDirectShortcutUnicast();
+                }
+            }
             if (!sent) {
-                this.runtime?.telemetry.recordSourceRouteFallback();
+                this.broadcastViaPolicy(frame, undefined, undefined, fireNow);
             }
-        }
+        };
 
-        // 2. Direct-recipient unicast shortcut (Android BluetoothPacketBroadcaster.kt:397-425)
-        if (!sent && recipientIdHex && this.policy.useDirectRecipientShortcut) {
-            sent = this.sendToDirectPeer(recipientIdHex, packet, nowMs);
-            if (sent) {
-                this.runtime?.telemetry.recordDirectShortcutUnicast();
+        if (frames.length === 1 || !this.runtime?.scheduler) {
+            for (const f of frames) {
+                sendFrame(f, nowMs);
             }
-        }
-
-        // 3. Fallback to policy broadcast
-        if (!sent) {
-            this.broadcastViaPolicy(packet, undefined, undefined, nowMs);
+        } else {
+            frames.forEach((f, idx) => {
+                if (idx === 0) {
+                    sendFrame(f, nowMs);
+                } else {
+                    this.runtime!.scheduler.scheduleIn(
+                        idx * FRAGMENT_CONFIG.INTER_FRAGMENT_DELAY_MS,
+                        fireNow => sendFrame(f, fireNow),
+                        `frag-send:${this.device.peerIDHex}:${idx}/${frames.length}`
+                    );
+                }
+            });
         }
 
         return packet;
@@ -441,7 +477,8 @@ export class BitchatAppSimulator implements DeviceTickable {
     private handlePacket(
         packet: BitchatPacket,
         from: BitchatDevice,
-        ingressConnection?: BitchatConnection
+        ingressConnection?: BitchatConnection,
+        options?: { overrideHops?: number; suppressRelay?: boolean }
     ): void {
         const nowMs = this.now();
         const senderHex = toHex(packet.senderID);
@@ -477,7 +514,7 @@ export class BitchatAppSimulator implements DeviceTickable {
         }
 
         const packetId = validation.packetId;
-        const hops = Math.max(1, this.policy.maxTtl - packet.ttl + 1);
+        const hops = options?.overrideHops ?? Math.max(1, this.policy.maxTtl - packet.ttl + 1);
         const transportName = ingressConnection?.transportType ?? 'BLE';
 
         // 1. Dispatch by packet type
@@ -485,6 +522,18 @@ export class BitchatAppSimulator implements DeviceTickable {
             this.handleAnnounce(packet, from, ingressConnection, nowMs, packetId, hops, transportName);
         } else if (packet.type === MessageType.LEAVE) {
             this.peerManager.removePeer(senderHex);
+        } else if (packet.type === MessageType.FRAGMENT) {
+            this.peerManager.updateLastSeen(senderHex, nowMs);
+            if (this.isForMe(packet)) {
+                const reassembled = this.fragmentManager.handleFragment(packet, nowMs);
+                if (reassembled) {
+                    // Reassembled packet has ttl=0 (processed locally; individual fragments relay below)
+                    this.handlePacket(reassembled, from, ingressConnection, {
+                        overrideHops: hops,
+                        suppressRelay: true,
+                    });
+                }
+            }
         } else if (
             packet.type === MessageType.MESSAGE ||
             packet.type === MessageType.FILE_TRANSFER ||
@@ -496,9 +545,9 @@ export class BitchatAppSimulator implements DeviceTickable {
             this.peerManager.updateLastSeen(senderHex, nowMs);
         }
 
-        // If this was a re-admitted duplicate direct ANNOUNCE, we refreshed link binding above;
-        // do not re-relay it again to avoid redundant floods.
-        if (validation.isDuplicateDirectAnnounce) {
+        // If this was a re-admitted duplicate direct ANNOUNCE or locally reassembled packet,
+        // do not relay it again.
+        if (validation.isDuplicateDirectAnnounce || options?.suppressRelay) {
             return;
         }
 

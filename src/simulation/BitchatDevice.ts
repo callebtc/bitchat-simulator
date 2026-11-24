@@ -6,11 +6,13 @@ import { SeededRandom } from './SeededRandom';
 import { EventScheduler } from './EventScheduler';
 import { TelemetryCollector } from './TelemetryCollector';
 import { BitchatConnection } from './BitchatConnection';
+import { BlePowerProfile, resolveBlePowerProfile } from './PowerProfile';
 
 export enum PowerMode {
     ECO = 'ECO',
     NORMAL = 'NORMAL',
     PERFORMANCE = 'PERFORMANCE',
+    ULTRA_LOW_POWER = 'ULTRA_LOW_POWER',
 }
 
 export interface ConnectionSettings {
@@ -20,9 +22,10 @@ export interface ConnectionSettings {
 }
 
 export const SCAN_INTERVALS: Record<PowerMode, number> = {
-    [PowerMode.ECO]: 60000,
-    [PowerMode.NORMAL]: 30000,
-    [PowerMode.PERFORMANCE]: 10000,
+    [PowerMode.ECO]: 30_000,
+    [PowerMode.NORMAL]: 10_000,
+    [PowerMode.PERFORMANCE]: 10_000,
+    [PowerMode.ULTRA_LOW_POWER]: 30_000,
 };
 
 export interface DeviceRuntime {
@@ -40,6 +43,7 @@ export interface DeviceTickable {
     onConnectionEstablished?(connection: BitchatConnection, nowMs: number): void;
     onConnectionBroken?(connection: BitchatConnection, nowMs: number): void;
     onGracefulStop?(nowMs: number): void;
+    shouldCollapseDuplicateLinks?(): boolean;
 }
 
 export class BitchatDevice {
@@ -57,13 +61,16 @@ export class BitchatDevice {
     runtime?: DeviceRuntime;
     rng: SeededRandom;
 
-    // Power & Scanning
-    powerMode: PowerMode = PowerMode.PERFORMANCE;
+    // Power & Scanning (Android PowerManager duty-cycle model)
+    powerMode: PowerMode = PowerMode.NORMAL;
+    isBackground: boolean = false;
     bluetoothStrength: number = 50; // 0-100, 50 is baseline
-    lastScanTime: number = -1;
-    currentScanDelay: number = -1;
+    /** Optional Wi-Fi Aware hardware capability (Phase 5) */
+    wifiAwareEnabled: boolean = false;
     isScanning: boolean = false;
-    alwaysScan: boolean = false; // For testing
+    alwaysScan: boolean = false; // Override for deterministic unit tests
+
+    private scanPhaseOffsetMs: number = -1;
 
     // Limits
     connectionSettings: ConnectionSettings = {
@@ -83,7 +90,15 @@ export class BitchatDevice {
         this.peerID = peerID;
         this.peerIDHex = toHex(peerID);
         this.nickname = nickname;
-        this.rng = rng ?? new SeededRandom(0x13370001 ^ (peerID[0] << 24) ^ (peerID[1] << 16) ^ (peerID[2] << 8) ^ peerID[3]);
+        this.rng =
+            rng ??
+            new SeededRandom(
+                0x13370001 ^
+                    (peerID[0] << 24) ^
+                    (peerID[1] << 16) ^
+                    (peerID[2] << 8) ^
+                    peerID[3]
+            );
         this.noisePublicKey = this.rng.fork('noise-pk').nextBytes(32);
         this.signingPublicKey = this.rng.fork('sign-pk').nextBytes(32);
         this.connectionManager = new ConnectionManager(this);
@@ -97,6 +112,15 @@ export class BitchatDevice {
 
     now(): number {
         return this.runtime ? this.runtime.clock() : 0;
+    }
+
+    getBlePowerProfile(): BlePowerProfile {
+        const hasDirectPeers = this.connectionManager.getActiveConnections().length > 0;
+        return resolveBlePowerProfile(this.powerMode, this.isBackground, hasDirectPeers);
+    }
+
+    getScanRssiThreshold(): number {
+        return this.getBlePowerProfile().rssiThresholdDbm;
     }
 
     setPowerMode(mode: PowerMode): void {
@@ -139,21 +163,25 @@ export class BitchatDevice {
             this.appSimulator.tick(now);
         }
 
-        // Scanning Logic
-        this.isScanning = this.alwaysScan;
-        const baseInterval = SCAN_INTERVALS[this.powerMode];
-
-        if (this.lastScanTime === -1) {
-            this.lastScanTime = now;
-            this.currentScanDelay = this.rng.next() * baseInterval;
-        }
-
-        if (now - this.lastScanTime > this.currentScanDelay) {
+        // Android PowerManager BLE scan ON/OFF duty cycling
+        if (this.alwaysScan) {
             this.isScanning = true;
-            this.lastScanTime = now;
-            const jitter = (this.rng.next() - 0.5) * 0.4; // -0.2 to +0.2
-            this.currentScanDelay = baseInterval * (1 + jitter);
+            return;
         }
+
+        const profile = this.getBlePowerProfile();
+        if (profile.continuousScan) {
+            this.isScanning = true;
+            return;
+        }
+
+        const cycleMs = profile.scanOnMs + profile.scanOffMs;
+        if (this.scanPhaseOffsetMs < 0) {
+            // Desynchronize devices across the scan duty cycle
+            this.scanPhaseOffsetMs = this.rng.next() * cycleMs;
+        }
+        const phase = (now + this.scanPhaseOffsetMs) % cycleMs;
+        this.isScanning = phase < profile.scanOnMs;
     }
 
     receivePacket(
@@ -164,11 +192,6 @@ export class BitchatDevice {
         if (this.onPacketReceived) {
             this.onPacketReceived(packet, from, connection);
         }
-    }
-
-    /** Helper used for telemetry checks without repeating hex conversion. */
-    peerIDHexFallback(senderID: Uint8Array): string {
-        return toHex(senderID);
     }
 
     static createRandom(rng?: SeededRandom): BitchatDevice {

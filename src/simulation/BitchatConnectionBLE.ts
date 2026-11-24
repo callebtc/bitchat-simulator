@@ -4,8 +4,16 @@ import { BinaryProtocol } from '../protocol/BinaryProtocol';
 import { BitchatDevice } from './BitchatDevice';
 import { EnvironmentManager, calculateLineAttenuationStats } from './environment';
 import { SeededRandom } from './SeededRandom';
+import { RadioMedium } from './RadioMedium';
 
-// RSSI Configuration - mutable so UI can modify
+/**
+ * BLE GATT Link Model aligned with Android BluetoothPacketBroadcaster.kt:
+ * - Log-distance path loss + building wall/material attenuation + sinusoidal fading
+ * - Serialized per-direction GATT queue (1 outstanding op at a time per direction)
+ * - Bounded queue (256 packets / 1 MiB per direction), 15 ms retry delay, max 3 retries
+ * - Per-device shared 2.4 GHz radio airtime & spatial SINR packet error rate via RadioMedium
+ */
+
 export const RSSI_CONFIG = {
     /** RSSI at 1 meter distance (typical BLE) in dBm */
     AT_1M: -40,
@@ -23,6 +31,13 @@ export const RSSI_CONFIG = {
     SMOOTHING_FACTOR: 0.3,
 };
 
+export const BLE_QUEUE_CONFIG = {
+    MAX_PENDING_SENDS_PER_LINK: 256,
+    MAX_PENDING_BYTES_PER_LINK: 1_048_576,
+    SEND_RETRY_DELAY_MS: 15,
+    MAX_CALLBACK_RETRIES: 3,
+} as const;
+
 export interface RSSIStats {
     distance: number;
     pathLoss: number;
@@ -32,6 +47,20 @@ export interface RSSIStats {
     gain: number;
     totalLoss: number;
     targetRSSI: number;
+}
+
+interface PendingGattSend {
+    packet: BitchatPacket;
+    from: BitchatDevice;
+    wireBytes: number;
+    enqueuedAtMs: number;
+    retries: number;
+}
+
+interface DirectionQueue {
+    items: PendingGattSend[];
+    pendingBytes: number;
+    inFlight: boolean;
 }
 
 /** Update RSSI config at runtime */
@@ -48,9 +77,16 @@ export class BitchatConnectionBLE extends BitchatConnection {
 
     // Detailed stats for UI
     lastStats: RSSIStats | null = null;
+    lastSinrDb: number | null = null;
+    lastMeasuredLatencyMs: number = 20;
 
-    // Environment reference (set by SimulationEngine)
+    // Environment & shared RF medium references (set by SimulationEngine)
     environment: EnvironmentManager | null = null;
+    radioMedium: RadioMedium | null = null;
+
+    // Separate serialized FIFO queues for client-write and server-notify directions
+    private clientWriteQueue: DirectionQueue = { items: [], pendingBytes: 0, inFlight: false };
+    private serverNotifyQueue: DirectionQueue = { items: [], pendingBytes: 0, inFlight: false };
 
     constructor(
         endpointA: BitchatDevice,
@@ -61,7 +97,6 @@ export class BitchatConnectionBLE extends BitchatConnection {
     ) {
         super(endpointA, endpointB, initiator, 'BLE', linkID);
         this.rng = rng;
-        // Initialize noise phase deterministically when rng is supplied
         this.noisePhase = (rng ? rng.next() : Math.random()) * Math.PI * 2;
 
         if (endpointA.position && endpointB.position) {
@@ -89,11 +124,9 @@ export class BitchatConnectionBLE extends BitchatConnection {
         const distance = Math.sqrt(dx * dx + dy * dy);
         const effectiveDistance = Math.max(distance, 0.1);
 
-        // 1. Path Loss
         const pathLoss = 10 * RSSI_CONFIG.PATH_LOSS_EXPONENT * Math.log10(effectiveDistance);
         let targetRSSI = RSSI_CONFIG.AT_1M - pathLoss;
 
-        // 2. Environment Loss (Walls)
         let wallLoss = 0;
         let materialLoss = 0;
         let wallsCrossed = 0;
@@ -107,7 +140,6 @@ export class BitchatConnectionBLE extends BitchatConnection {
             targetRSSI -= stats.total;
         }
 
-        // 3. Bluetooth Strength Gain (50 = 0 dB, 100 = +3 dB, 25 = -3 dB)
         const gainA = 10 * Math.log10(Math.max(1, strengthA) / 50);
         const gainB = 10 * Math.log10(Math.max(1, strengthB) / 50);
         const totalGain = gainA + gainB;
@@ -137,24 +169,55 @@ export class BitchatConnectionBLE extends BitchatConnection {
         return this.calculateTargetRSSI(posA, posB, strengthA, strengthB, environment).targetRSSI;
     }
 
+    getQueueDepth(): number {
+        return this.clientWriteQueue.items.length + this.serverNotifyQueue.items.length;
+    }
+
     send(packet: BitchatPacket, from: BitchatDevice, nowMs?: number): boolean {
-        if (!this.isActive) return false;
+        if (!this.isActive || !this.isReady) return false;
 
         const now = nowMs ?? this.clock();
         const encoded = BinaryProtocol.encode(packet);
         const wireBytes = encoded ? encoded.length : packet.payload.length + 22;
 
+        // If scheduler is attached (full SimulationEngine run), use serialized GATT queue + RadioMedium
+        if (this.scheduler) {
+            const queue =
+                from === this.initiator ? this.clientWriteQueue : this.serverNotifyQueue;
+
+            if (
+                queue.items.length >= BLE_QUEUE_CONFIG.MAX_PENDING_SENDS_PER_LINK ||
+                queue.pendingBytes + wireBytes > BLE_QUEUE_CONFIG.MAX_PENDING_BYTES_PER_LINK
+            ) {
+                this.packetsDropped++;
+                this.telemetry?.recordDrop('queue_full');
+                return false;
+            }
+
+            queue.items.push({
+                packet,
+                from,
+                wireBytes,
+                enqueuedAtMs: now,
+                retries: 0,
+            });
+            queue.pendingBytes += wireBytes;
+
+            if (!queue.inFlight) {
+                this.startNextGattOp(queue, now);
+            }
+            return true;
+        }
+
+        // Standalone fallback (direct unit tests without EventScheduler)
         this.packetsSent++;
         this.bytesSent += wireBytes;
         this.lastActivityAtMs = now;
-
         const isRelay = from.peerIDHex !== toHex(packet.senderID);
         this.telemetry?.recordPacketTransmitted(now, wireBytes, isRelay);
-
         if (this.onPacketSent) {
             this.onPacketSent(packet, from);
         }
-
         this.packetQueue.push({
             packet,
             from,
@@ -163,19 +226,127 @@ export class BitchatConnectionBLE extends BitchatConnection {
         return true;
     }
 
-    /**
-     * Update RSSI based on current positions and environment.
-     * Advances noisePhase strictly by elapsed dt (fixing previous absolute-now bug).
-     */
+    private startNextGattOp(queue: DirectionQueue, nowMs: number): void {
+        if (!this.isActive || !this.scheduler) {
+            queue.inFlight = false;
+            return;
+        }
+        const head = queue.items[0];
+        if (!head) {
+            queue.inFlight = false;
+            return;
+        }
+
+        queue.inFlight = true;
+        const medium = this.radioMedium;
+        const airtimeMs = medium
+            ? medium.computeBleAirtimeMs(head.wireBytes)
+            : 15 + (head.wireBytes * 8 * 1000) / 250_000;
+
+        // Reserve per-device shared BLE radio airtime
+        const window = medium
+            ? medium.reserveDeviceRadio(head.from.peerIDHex, '2.4GHz', nowMs, airtimeMs)
+            : { startMs: nowMs, endMs: nowMs + airtimeMs };
+
+        const channel = this.rng ? this.rng.nextInt(0, 36) : 0;
+        const txPos = head.from.position ?? { x: 0, y: 0 };
+        const txId = medium
+            ? medium.registerTransmission({
+                  band: '2.4GHz',
+                  txDeviceId: head.from.peerIDHex,
+                  txPosition: txPos,
+                  txStrength: head.from.bluetoothStrength,
+                  channel,
+                  startMs: window.startMs,
+                  endMs: window.endMs,
+              })
+            : 0;
+
+        this.packetsSent++;
+        this.bytesSent += head.wireBytes;
+        this.lastActivityAtMs = window.startMs;
+
+        const isRelay = head.from.peerIDHex !== toHex(head.packet.senderID);
+        this.telemetry?.recordPacketTransmitted(window.startMs, head.wireBytes, isRelay);
+        if (this.onPacketSent) {
+            this.onPacketSent(head.packet, head.from);
+        }
+
+        this.scheduler.scheduleAt(
+            window.endMs,
+            doneMs => {
+                if (!this.isActive) {
+                    queue.inFlight = false;
+                    return;
+                }
+
+                const target = this.getOtherParty(head.from);
+                const rxPos = target.position ?? { x: 0, y: 0 };
+
+                let failed = false;
+                if (medium) {
+                    const evalResult = medium.evaluateReception({
+                        txId,
+                        band: '2.4GHz',
+                        rssiDbm: this.rssi,
+                        rxPosition: rxPos,
+                        rxStrength: target.bluetoothStrength,
+                        channel,
+                        wireBytes: head.wireBytes,
+                        startMs: window.startMs,
+                        endMs: window.endMs,
+                        environment: this.environment,
+                    });
+                    this.lastSinrDb = evalResult.sinrDb;
+                    if (evalResult.packetErrorRate > 0) {
+                        const roll = this.rng ? this.rng.next() : 0.5;
+                        if (roll < evalResult.packetErrorRate) {
+                            failed = true;
+                        }
+                    }
+                }
+
+                if (failed && head.retries < BLE_QUEUE_CONFIG.MAX_CALLBACK_RETRIES) {
+                    head.retries++;
+                    this.scheduler?.scheduleAt(
+                        doneMs + BLE_QUEUE_CONFIG.SEND_RETRY_DELAY_MS,
+                        retryMs => this.startNextGattOp(queue, retryMs),
+                        `ble-retry:${this.linkID}`
+                    );
+                    return;
+                }
+
+                // Pop completed (or exhausted) head item
+                queue.items.shift();
+                queue.pendingBytes = Math.max(0, queue.pendingBytes - head.wireBytes);
+
+                if (failed) {
+                    this.packetsDropped++;
+                    this.telemetry?.recordDrop('rf_per');
+                } else {
+                    this.packetsReceived++;
+                    this.lastActivityAtMs = doneMs;
+                    this.lastMeasuredLatencyMs = Math.max(1, doneMs - head.enqueuedAtMs);
+                    this.telemetry?.recordPacketDeliveredOnLink();
+                    target.receivePacket(head.packet, head.from, this);
+                }
+
+                if (queue.items.length > 0) {
+                    this.startNextGattOp(queue, doneMs);
+                } else {
+                    queue.inFlight = false;
+                }
+            },
+            `ble-tx-done:${this.linkID}`
+        );
+    }
+
     updateRSSI(now: number): boolean {
         if (!this.isActive) return false;
 
         const posA = this.endpointA.position;
         const posB = this.endpointB.position;
-
-        if (!posA || !posB) {
-            return true;
-        }
+        if (!posA || !posB) return true;
 
         const stats = BitchatConnectionBLE.calculateTargetRSSI(
             posA,
@@ -188,7 +359,6 @@ export class BitchatConnectionBLE extends BitchatConnection {
         this.lastStats = stats;
         this.rssiTarget = stats.targetRSSI;
 
-        // Advance sinusoidal fading phase by elapsed dt in seconds
         const dtSec =
             this.lastRssiUpdateMs !== null ? Math.max(0, (now - this.lastRssiUpdateMs) * 0.001) : 0;
         this.lastRssiUpdateMs = now;
@@ -203,7 +373,6 @@ export class BitchatConnectionBLE extends BitchatConnection {
         if (this.rssi < RSSI_CONFIG.DISCONNECT_THRESHOLD) {
             return false;
         }
-
         return true;
     }
 
@@ -215,5 +384,15 @@ export class BitchatConnectionBLE extends BitchatConnection {
 
     getTargetRSSI(): number {
         return this.rssiTarget;
+    }
+
+    override close(): void {
+        super.close();
+        this.clientWriteQueue.items.length = 0;
+        this.clientWriteQueue.pendingBytes = 0;
+        this.clientWriteQueue.inFlight = false;
+        this.serverNotifyQueue.items.length = 0;
+        this.serverNotifyQueue.pendingBytes = 0;
+        this.serverNotifyQueue.inFlight = false;
     }
 }
