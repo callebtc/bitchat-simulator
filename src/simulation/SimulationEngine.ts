@@ -8,6 +8,7 @@ import { BitchatConnectionBLE, RSSI_CONFIG } from './BitchatConnectionBLE';
 import { BitchatConnectionWifiAware, WIFI_AWARE_CONFIG } from './BitchatConnectionWifiAware';
 import { LogManager } from './LogManager';
 import { EnvironmentManager, PathFinder } from './environment';
+import { CrowdManager } from './crowd/CrowdManager';
 import { SeededRandom } from './SeededRandom';
 import { EventScheduler } from './EventScheduler';
 import { TelemetryCollector } from './TelemetryCollector';
@@ -56,6 +57,8 @@ export class SimulationEngine {
     scheduler: EventScheduler;
     telemetry: TelemetryCollector;
     radioMedium: RadioMedium;
+    /** Pedestrian crowd context: neighbour snapshot, destinations, groups. */
+    crowd: CrowdManager;
 
     /** Monotonic simulation clock in milliseconds (decoupled from wall clock). */
     simTimeMs: number = 0;
@@ -112,6 +115,7 @@ export class SimulationEngine {
         this.logManager.setClock(() => this.simTimeMs);
         this.environment = new EnvironmentManager();
         this.pathFinder = new PathFinder();
+        this.crowd = new CrowdManager(this.environment, this.rng.fork('crowd'));
     }
 
     createDeviceRuntime(): DeviceRuntime {
@@ -128,6 +132,7 @@ export class SimulationEngine {
         person.setLogger(this.logManager);
         person.environment = this.environment;
         person.pathFinder = this.pathFinder;
+        person.crowd = this.crowd;
         person.setRng(this.rng.fork(`person:${person.id}`));
         person.device.attachRuntime(this.createDeviceRuntime());
         this.people.set(person.id, person);
@@ -141,6 +146,8 @@ export class SimulationEngine {
     }
 
     rebuildPathfindingGraph(): boolean {
+        // Environment changed: destinations / points of interest must be re-derived
+        this.crowd.onEnvironmentChanged();
         const buildings = this.environment.getBuildings();
         const loadedFromCache = this.pathFinder.buildVisibilityGraph(
             buildings,
@@ -187,6 +194,7 @@ export class SimulationEngine {
 
         this.people.delete(id);
         this.spatial.removePerson(id);
+        this.crowd.onPersonRemoved(id);
         this.logManager.suppressDebug = this.people.size > STAGGER_POPULATION_THRESHOLD;
         this.events.emit('person_removed', id);
         this.logManager.log('INFO', 'GLOBAL', `Removed person ${id}`);
@@ -222,6 +230,7 @@ export class SimulationEngine {
         this.speedSampleWallMs = 0;
         this.speedSampleSimMs = 0;
         this.rng = new SeededRandom(newSeed ?? this.initialSeed);
+        this.crowd = new CrowdManager(this.environment, this.rng.fork('crowd'));
         this.scheduler.clear(0);
         this.telemetry.reset();
         this.radioMedium.reset();
@@ -267,6 +276,8 @@ export class SimulationEngine {
 
         // 2. Update positions & device ticks (dense array iteration, zero Map iterator overhead)
         const peopleList = this.spatial.getAll();
+        // Pedestrians steer against a snapshot of everyone's state at tick start
+        this.crowd.beginStep(peopleList);
         for (let i = 0; i < peopleList.length; i++) {
             const person = peopleList[i];
             person.update(dt);
@@ -585,6 +596,7 @@ export class SimulationEngine {
         // Complete physics, spatial index, RSSI, handshakes, and discovery for this tick
         const stepDt = this.pendingStepDt;
         const peopleList = this.spatial.getAll();
+        this.crowd.beginStep(peopleList);
         for (let i = 0; i < peopleList.length; i++) {
             const person = peopleList[i];
             person.update(stepDt);

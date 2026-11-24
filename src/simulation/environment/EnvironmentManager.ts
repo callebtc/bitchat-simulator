@@ -472,6 +472,43 @@ export class EnvironmentManager {
     }
 
     /**
+     * Closest point on any building wall within `radius` of (x, y).
+     * Writes the vector from that wall point to (x, y) into `out` and returns
+     * the distance, or Infinity when no wall is that close. Used by pedestrian
+     * steering to keep a natural clearance from facades.
+     */
+    nearestWall(x: number, y: number, radius: number, out: Point2D): number {
+        if (this.buildings.length === 0) return Infinity;
+        const candidates = this.getBuildingsInPath({ x: x - radius, y: y - radius }, { x: x + radius, y: y + radius });
+        let best = radius * radius;
+        let found = false;
+        for (const b of candidates) {
+            const rings = b.holes ? [b.vertices, ...b.holes] : [b.vertices];
+            for (const v of rings) {
+                for (let i = 0, n = v.length; i < n; i++) {
+                    const a = v[i];
+                    const c = v[(i + 1) % n];
+                    const ex = c.x - a.x;
+                    const ey = c.y - a.y;
+                    const len2 = ex * ex + ey * ey;
+                    let t = len2 > 1e-9 ? ((x - a.x) * ex + (y - a.y) * ey) / len2 : 0;
+                    t = t < 0 ? 0 : t > 1 ? 1 : t;
+                    const qx = a.x + ex * t;
+                    const qy = a.y + ey * t;
+                    const d2 = (x - qx) * (x - qx) + (y - qy) * (y - qy);
+                    if (d2 < best) {
+                        best = d2;
+                        out.x = x - qx;
+                        out.y = y - qy;
+                        found = true;
+                    }
+                }
+            }
+        }
+        return found ? Math.sqrt(best) : Infinity;
+    }
+
+    /**
      * Check if a point is inside any building (O(1) grid cell lookup).
      */
     isInsideBuilding(point: Point2D): Building | null {

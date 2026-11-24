@@ -18,7 +18,7 @@ export interface AddNodeOptions {
 export function setupDemo(
     engine: SimulationEngine,
     count: number = 5,
-    options?: Pick<AddNodeOptions, 'policyPreset' | 'wifiAwareEnabled'>
+    options?: Pick<AddNodeOptions, 'policyPreset' | 'wifiAwareEnabled' | 'initialMode'>
 ): void {
     engine.reset();
     nextSpawnSeq = 1;
@@ -42,6 +42,7 @@ export function setupDemo(
         );
 
         engine.addPerson(p);
+        if (options?.initialMode) p.setMode(options.initialMode);
     }
 }
 

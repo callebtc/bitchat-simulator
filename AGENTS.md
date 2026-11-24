@@ -78,6 +78,11 @@ When adding or revising simulated protocol behavior, cite the corresponding upst
     - `BitchatAppSimulator.ts`: Software model of the BitChat app. Handles periodic `ANNOUNCE` gossip (5 s ±20%), FNV-1a deduplication (`seenPackets`, cap 1,000), `MeshGraph` updates, v2 source-routed unicast with flood fallback, and split-horizon flood relaying.
     - `MeshGraph.ts`: Tracks announced neighbor lists per peer; computes shortest paths (BFS) strictly over **bidirectionally confirmed edges** (`A` announces `B` AND `B` announces `A`).
     - `PeerManager.ts`: Tracks discovered peers (`id`, `nickname`, `lastSeen`, `isDirect`, `hops`).
+  - `crowd/` — pedestrian behaviour (headless, deterministic):
+    - `CrowdManager.ts`: owned by `SimulationEngine` (`engine.crowd`); per-step neighbour snapshot (`CrowdGrid`, 3 m cells, Jacobi update so results don't depend on update order), destination planning, and social groups (size mix after Moussaïd et al. 2010; leader picks destinations, followers walk abreast, leaders wait for stragglers).
+    - `Steering.ts`: goal relaxation (Helbing), anticipatory time-to-collision avoidance (Karamouzas et al. 2014) biased toward swerving / keep-right, personal-space and wall repulsion, Weidmann speed–density slowdown.
+    - `Destinations.ts`: points of interest from the OSM map (shop entrances facing roads, sidewalks, plazas, parks; synthetic hotspots without a map), distance-decayed choice, per-kind dwell times.
+    - `BitchatPerson` modes: `RANDOM_WALK` = strolling (destinations + dwell + groups), `BUSY` = errands (indoors stays in its building), `TARGET` = user goal; free speed ~N(1.34, 0.26) m/s.
   - `environment/`:
     - `types.ts`: GeoJSON types, `ATTENUATION_CONFIG` (`WALL_LOSS = 15 dB`, `BUILDING_DENSE_DB_M = 4.0 dB/m`, `BUILDING_INTERNAL_DB_M = 0.5 dB/m`), local Mercator projections.
     - `EnvironmentManager.ts`: Loads GeoJSON polygons into local meter coordinates, AABB-filtered building queries, point-in-polygon checks, and iterative wall-slide collision (`resolveMovement`).

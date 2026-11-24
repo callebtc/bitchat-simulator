@@ -208,12 +208,56 @@ export const InspectorPanel: React.FC = () => {
                             className="mt-0.5 w-full cursor-pointer bg-transparent text-[12px] text-amber-300 focus:outline-none"
                         >
                             <option value={MovementMode.STILL}>Still</option>
-                            <option value={MovementMode.RANDOM_WALK}>Wander</option>
+                            <option value={MovementMode.RANDOM_WALK}>Stroll</option>
                             <option value={MovementMode.TARGET}>Go to target</option>
-                            <option value={MovementMode.BUSY}>Busy (indoors)</option>
+                            <option value={MovementMode.BUSY}>Errands</option>
                         </select>
                     </div>
                 </div>
+
+                {/* What they're doing */}
+                {(() => {
+                    const group = engine.crowd.groupOf(person.id);
+                    const mates = (group?.members ?? [])
+                        .filter(id => id !== person.id)
+                        .map(id => engine.getPerson(id)?.device.nickname)
+                        .filter(Boolean);
+                    const place: Record<string, string> = {
+                        entrance: 'a shop entrance',
+                        plaza: 'the plaza',
+                        park: 'the park',
+                        sidewalk: 'down the street',
+                        hotspot: 'a meeting spot',
+                    };
+                    const doing =
+                        person.mode === MovementMode.STILL
+                            ? 'Standing still'
+                            : person.mode === MovementMode.TARGET
+                              ? 'Walking to your target'
+                              : person.activity === 'dwelling'
+                                ? `Lingering at ${place[person.destinationKind ?? ''] ?? 'a spot'}`
+                                : person.activity === 'following'
+                                  ? 'Walking with their group'
+                                  : person.destinationKind
+                                    ? `Heading to ${place[person.destinationKind]}`
+                                    : 'Walking';
+                    const speed = Math.hypot(person.velocity.x, person.velocity.y);
+                    return (
+                        <div className="rounded-lg bg-white/[0.03] px-2 py-1.5 text-[11px] ring-1 ring-white/[0.05]">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className="truncate text-slate-200">{doing}</span>
+                                <span className="shrink-0 font-mono text-[10px] tabular-nums text-slate-500">
+                                    {speed.toFixed(1)} / {person.prefSpeed.toFixed(1)} m/s
+                                </span>
+                            </div>
+                            {mates.length > 0 && (
+                                <div className="mt-0.5 truncate text-[10px] text-emerald-300/80">
+                                    {group?.members[0] === person.id ? 'Leading' : 'With'} {mates.join(', ')}
+                                </div>
+                            )}
+                        </div>
+                    );
+                })()}
 
                 {/* Camera + phone */}
                 <div className="grid grid-cols-4 gap-1">

@@ -85,11 +85,7 @@ export const MainControlPanel: React.FC = () => {
             history.current = { links: [], pps: [] };
             refresh(n => n + 1);
         };
-        const onEnvironment = (data: { buildingCount: number }) => {
-            if (data.buildingCount > 0) setSpawnBusy(true);
-        };
         engine.events.on('reset', onReset);
-        engine.events.on('environment_loaded', onEnvironment);
         const interval = setInterval(() => {
             const now = Date.now();
             const h = history.current;
@@ -102,7 +98,6 @@ export const MainControlPanel: React.FC = () => {
         }, 250);
         return () => {
             engine.events.off('reset', onReset);
-            engine.events.off('environment_loaded', onEnvironment);
             clearInterval(interval);
         };
     }, [engine]);
@@ -129,7 +124,7 @@ export const MainControlPanel: React.FC = () => {
             addRandomNode(engine, {
                 center: viewCenterRef.current,
                 preferOutdoors,
-                initialMode: spawnBusy ? MovementMode.BUSY : undefined,
+                initialMode: spawnBusy ? MovementMode.BUSY : MovementMode.RANDOM_WALK,
                 policyPreset: fleetPolicy,
                 wifiAwareEnabled: fleetWifiAware,
             });
@@ -291,7 +286,11 @@ export const MainControlPanel: React.FC = () => {
                                 tone="danger"
                                 title="Reset to 5 demo devices"
                                 onClick={() =>
-                                    setupDemo(engine, 5, { policyPreset: fleetPolicy, wifiAwareEnabled: fleetWifiAware })
+                                    setupDemo(engine, 5, {
+                                        policyPreset: fleetPolicy,
+                                        wifiAwareEnabled: fleetWifiAware,
+                                        initialMode: MovementMode.RANDOM_WALK,
+                                    })
                                 }
                             >
                                 Reset

@@ -7,6 +7,7 @@ import { MainControlPanel } from './hud/MainControlPanel';
 import { BottomPanel } from './hud/BottomPanel';
 
 import { setupDemo } from '../simulation/DemoSetup';
+import { MovementMode } from '../simulation/BitchatPerson';
 import { probePeerRoute } from '../simulation/MeshProbe';
 
 import { LayoutProvider } from './context/LayoutContext';
@@ -26,7 +27,7 @@ const SimulationController = () => {
     useEffect(() => {
         const handleReset = () => select(null, null);
         engine.events.on('reset', handleReset);
-        setupDemo(engine, 5); // Auto init
+        setupDemo(engine, 5, { initialMode: MovementMode.RANDOM_WALK }); // Auto init: people strolling
         engine.start();
         return () => {
             engine.events.off('reset', handleReset);
