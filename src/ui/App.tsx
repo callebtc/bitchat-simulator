@@ -13,6 +13,7 @@ import { LayoutProvider } from './context/LayoutContext';
 import { VisualizationProvider } from './context/VisualizationContext';
 import { CameraProvider } from './context/CameraContext';
 import { TerrainProvider } from './context/TerrainContext';
+import { MotionProvider } from './context/MotionContext';
 import { PeerLabels } from './overlays/PeerLabels';
 import { ChatBubbles } from './overlays/ChatBubbles';
 import { ViewDock } from './hud/ViewDock';
@@ -113,7 +114,9 @@ function App() {
             <VisualizationProvider>
                 <SimulationProvider>
                     <TerrainProvider>
-                        <LayoutContent />
+                        <MotionProvider>
+                            <LayoutContent />
+                        </MotionProvider>
                     </TerrainProvider>
                 </SimulationProvider>
             </VisualizationProvider>

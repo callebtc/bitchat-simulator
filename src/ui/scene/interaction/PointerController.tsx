@@ -6,6 +6,7 @@ import { useSimulation } from '../../context/SimulationContext';
 import { useSelection } from '../../context/SelectionContext';
 import { useCamera } from '../../context/CameraContext';
 import { useTerrain } from '../../context/TerrainContext';
+import { useMotion } from '../../context/MotionContext';
 import { BitchatPerson } from '../../../simulation/BitchatPerson';
 import { BitchatConnection } from '../../../simulation/BitchatConnection';
 import { simToWorld } from '../coords';
@@ -19,7 +20,8 @@ import { arcApexHeight, arcPoint, ArcPoint } from '../network/linkArc';
  * ties. This is O(N) per throttled hover but avoids triangle raycasts against
  * instanced figures and works identically for 3D figures and far markers.
  *
- *  - Left click: select device / 2nd device = DM recipient / link / clear.
+ *  - Left click: select device / link / clear. While the chat tab's "To:"
+ *    picker is active, the click picks the DM recipient instead.
  *  - Left drag on selected device: carry it (moves on the ground plane).
  *  - Right click (no drag): send selected device walking to that spot.
  *  - Left / right drag elsewhere: orbit / pan (OrbitControls).
@@ -51,6 +53,7 @@ export const PointerController: React.FC = () => {
     const selection = useSelection();
     const { mode } = useCamera();
     const { fieldRef } = useTerrain();
+    const motion = useMotion();
 
     // Latest selection state for native listeners
     const selRef = useRef(selection);
@@ -86,9 +89,10 @@ export const PointerController: React.FC = () => {
             for (let i = 0; i < people.length; i++) {
                 const p = people[i];
                 // Test both body center and floating marker so either is clickable
-                const gz = fieldRef.current?.sample(p.position.x, p.position.y) ?? 0;
+                const pos = motion.positionOf(p.id, p.position);
+                const gz = fieldRef.current?.sample(pos.x, pos.y) ?? 0;
                 for (const z of [1.1, 2.35]) {
-                    const s = toScreen(p.position.x, p.position.y, z + gz);
+                    const s = toScreen(pos.x, pos.y, z + gz);
                     if (!s) continue;
                     const d2 = (s.sx - clientX) ** 2 + (s.sy - clientY) ** 2;
                     if (d2 > r2) continue;
@@ -241,10 +245,8 @@ export const PointerController: React.FC = () => {
                 return;
             }
             if (person) {
-                if (sel.selectedId && sel.selectionType === 'node' && person.id !== sel.selectedId && !e.altKey) {
-                    sel.setChatRecipientId(person.device.peerIDHex);
-                    return;
-                }
+                // A plain click always (re)selects. DM recipients are chosen only via
+                // the chat tab's "To:" picker (isPickingRecipient, handled above).
                 sel.select(person.id, 'node');
                 return;
             }
@@ -275,7 +277,7 @@ export const PointerController: React.FC = () => {
             el.removeEventListener('contextmenu', onContextMenu);
             window.removeEventListener('keydown', onKey);
         };
-    }, [engine, camera, gl, controls, fieldRef]);
+    }, [engine, camera, gl, controls, fieldRef, motion]);
 
     return null;
 };

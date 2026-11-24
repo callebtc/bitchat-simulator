@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { useSimulation } from '../../context/SimulationContext';
 import { useSelection } from '../../context/SelectionContext';
 import { useTerrain } from '../../context/TerrainContext';
+import { useMotion } from '../../context/MotionContext';
 
 const BEACON_HEIGHT_M = 60;
 
@@ -47,6 +48,7 @@ export const SelectionBeacons: React.FC = () => {
     const engine = useSimulation();
     const { selectedId, selectionType, chatRecipientId } = useSelection();
     const { heightAt } = useTerrain();
+    const motion = useMotion();
     const senderRef = useRef<THREE.Mesh>(null);
     const recipientRef = useRef<THREE.Mesh>(null);
 
@@ -73,15 +75,17 @@ export const SelectionBeacons: React.FC = () => {
         const recipient = chatRecipientId ? engine.getPersonByPeerId(chatRecipientId) : undefined;
         if (senderRef.current) {
             senderRef.current.visible = Boolean(sender);
-            if (sender) senderRef.current.position.set(sender.position.x, sender.position.y, heightAt(sender.position.x, sender.position.y));
+            if (sender) {
+                const p = motion.positionOf(sender.id, sender.position);
+                senderRef.current.position.set(p.x, p.y, heightAt(p.x, p.y));
+            }
         }
         if (recipientRef.current) {
             recipientRef.current.visible = Boolean(recipient);
-            if (recipient) recipientRef.current.position.set(
-                    recipient.position.x,
-                    recipient.position.y,
-                    heightAt(recipient.position.x, recipient.position.y)
-                );
+            if (recipient) {
+                const p = motion.positionOf(recipient.id, recipient.position);
+                recipientRef.current.position.set(p.x, p.y, heightAt(p.x, p.y));
+            }
         }
     });
 

@@ -13,6 +13,8 @@ import { BitchatPacket, MessageType, toHex } from '../../../protocol/BitchatPack
 import { packetColorHex, writeRssiColor } from '../palette';
 import { arcApexHeight, arcPoint, ArcPoint } from './linkArc';
 import { useTerrain } from '../../context/TerrainContext';
+import { useMotion } from '../../context/MotionContext';
+import { BitchatDevice } from '../../../simulation/BitchatDevice';
 
 /**
  * Radio network visualization:
@@ -28,7 +30,7 @@ const MAX_ARC_SEGMENTS = 14;
 const MAX_PACKETS = 4096;
 const MAX_RIPPLES = 192;
 const PACKET_SPEED_MPS = 110;
-const RIPPLE_DURATION_S = 0.9;
+const RIPPLE_DURATION_S = 1.1;
 /** Distance at which free-space BLE RSSI reaches the disconnect threshold (log-distance model). */
 const NOMINAL_BLE_RANGE_M = Math.pow(
     10,
@@ -116,6 +118,7 @@ export const NetworkLayer: React.FC = () => {
     const { selectedId, selectionType } = useSelection();
     const { showAnnouncePackets, highlightOwnMesh, showLinks, showRadioPulses } = useVisualization();
     const { fieldRef } = useTerrain();
+    const motion = useMotion();
 
     const packetMeshRef = useRef<THREE.InstancedMesh>(null);
     const rippleMeshRef = useRef<THREE.InstancedMesh>(null);
@@ -130,7 +133,8 @@ export const NetworkLayer: React.FC = () => {
         const ble = makeLineBuffers(SEGMENT_BUDGET);
         const wifi = makeLineBuffers(SEGMENT_BUDGET / 4);
         const packetGeo = new THREE.IcosahedronGeometry(0.34, 1);
-        const rippleGeo = new THREE.RingGeometry(0.93, 1.0, 72);
+        // Thin rim (~1 m at full BLE range) so overlapping pulses read as wavefronts, not discs
+        const rippleGeo = new THREE.RingGeometry(0.984, 1.0, 96);
         return { ble, wifi, packetGeo, rippleGeo };
     }, []);
 
@@ -163,11 +167,13 @@ export const NetworkLayer: React.FC = () => {
             pool.active[slot] = 1;
             pool.progress[slot] = 0;
             pool.forward[slot] = data.fromId === conn.endpointA.peerIDHex ? 1 : 0;
-            const boost = isRelay ? 2.2 : 4.5; // HDR so packets bloom even in daylight
+            // Background ANNOUNCE traffic stays small and below the bloom threshold;
+            // user data (messages, DMs, routed packets) is HDR so it glows in daylight.
+            const boost = isAnnounce ? (isRelay ? 0.35 : 0.6) : isRelay ? 2.2 : 4.5;
             pool.color[slot * 3] = _c.r * boost;
             pool.color[slot * 3 + 1] = _c.g * boost;
             pool.color[slot * 3 + 2] = _c.b * boost;
-            pool.scale[slot] = isRelay ? 0.7 : 1.15;
+            pool.scale[slot] = isAnnounce ? (isRelay ? 0.3 : 0.45) : isRelay ? 0.7 : 1.15;
             pool.conn[slot] = conn;
             pool.sender[slot] = sender;
 
@@ -189,7 +195,7 @@ export const NetworkLayer: React.FC = () => {
                 rp.age[r] = 0;
                 rp.x[r] = origin.position.x;
                 rp.y[r] = origin.position.y;
-                const k = isAnnounce ? 0.35 : 1.1;
+                const k = isAnnounce ? 0.08 : 0.55;
                 rp.color[r * 3] = _c.r * k;
                 rp.color[r * 3 + 1] = _c.g * k;
                 rp.color[r * 3 + 2] = _c.b * k;
@@ -211,6 +217,11 @@ export const NetworkLayer: React.FC = () => {
         const delta = Math.min(rawDelta, 0.1);
         const connections = engine.getAllConnections();
         const field = fieldRef.current;
+        // Smoothly interpolated endpoint positions (match the rendered figures)
+        const posOf = (dev: BitchatDevice): { x: number; y: number } | undefined => {
+            const owner = engine.getPersonByPeerId(dev.peerIDHex);
+            return owner ? motion.positionOf(owner.id, owner.position) : dev.position;
+        };
         const selectedPerson =
             selectedId && selectionType === 'node' ? engine.getPerson(selectedId) : undefined;
         const selectedSim = selectedPerson?.device.appSimulator as BitchatAppSimulator | undefined;
@@ -235,8 +246,8 @@ export const NetworkLayer: React.FC = () => {
 
             for (let i = 0; i < connections.length; i++) {
                 const conn = connections[i];
-                const a = conn.endpointA.position;
-                const b = conn.endpointB.position;
+                const a = posOf(conn.endpointA);
+                const b = posOf(conn.endpointB);
                 if (!a || !b) continue;
                 const dx = b.x - a.x;
                 const dy = b.y - a.y;
@@ -332,8 +343,8 @@ export const NetworkLayer: React.FC = () => {
                 for (let i = 0; i < MAX_PACKETS; i++) {
                     if (!pool.active[i]) continue;
                     const conn = pool.conn[i];
-                    const a = conn?.endpointA.position;
-                    const b = conn?.endpointB.position;
+                    const a = conn ? posOf(conn.endpointA) : undefined;
+                    const b = conn ? posOf(conn.endpointB) : undefined;
                     if (!conn || !conn.isActive || !a || !b) {
                         pool.active[i] = 0;
                         pool.conn[i] = null;
@@ -397,7 +408,7 @@ export const NetworkLayer: React.FC = () => {
                 const gz = field ? field.sample(rp.x[i], rp.y[i]) : 0;
                 _m.makeScale(radius, radius, 1).setPosition(rp.x[i], rp.y[i], gz + 0.22);
                 _m.toArray(mats, visible * 16);
-                const fade = (1 - t) * (1 - t);
+                const fade = (1 - t) * (1 - t) * (1 - t);
                 _c.setRGB(rp.color[i * 3] * fade, rp.color[i * 3 + 1] * fade, rp.color[i * 3 + 2] * fade);
                 ripMesh.setColorAt(visible, _c);
                 visible++;

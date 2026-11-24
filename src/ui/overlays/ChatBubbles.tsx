@@ -5,6 +5,7 @@ import { useVisualization } from '../context/VisualizationContext';
 import { BitchatAppSimulator } from '../../simulation/AppLayer/BitchatAppSimulator';
 import { useScreenAnchor } from './ScreenAnchors';
 import { useTerrain } from '../context/TerrainContext';
+import { useMotion } from '../context/MotionContext';
 
 /**
  * Speech bubbles above devices when a chat message is sent (public mesh
@@ -29,11 +30,14 @@ interface Bubble {
 const BubbleView: React.FC<{ bubble: Bubble }> = ({ bubble }) => {
     const engine = useSimulation();
     const { heightAt } = useTerrain();
+    const motion = useMotion();
     const ref = useScreenAnchor(
         `bubble:${bubble.key}`,
         () => {
             const p = engine.getPerson(bubble.personId);
-            return p ? { x: p.position.x, y: p.position.y, z: 3.3 + heightAt(p.position.x, p.position.y) } : null;
+            if (!p) return null;
+            const pos = motion.positionOf(p.id, p.position);
+            return { x: pos.x, y: pos.y, z: 3.3 + heightAt(pos.x, pos.y) };
         },
         { maxDistance: 1600, scaleWithDistance: false }
     );

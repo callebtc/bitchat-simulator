@@ -22,7 +22,7 @@ export const BottomPanel: React.FC = () => {
         setBottomPanelHeight(isCollapsed ? 32 : 272);
     }, [isCollapsed, setBottomPanelHeight]);
 
-    // Automatically open & switch to CHAT when user picks a 2nd node on map or clicks a peer to DM
+    // Automatically open & switch to CHAT when a DM recipient is picked
     useEffect(() => {
         if (showChatTab && chatRecipientId && chatRecipientId !== prevRecipientRef.current) {
             setActiveTab('CHAT');
@@ -115,10 +115,10 @@ export const BottomPanel: React.FC = () => {
                 {/* Contextual 2-click hint */}
                 <div className="flex-1 flex justify-end pr-3 text-[10px] font-mono text-gray-500 truncate">
                     {showChatTab && !chatRecipientId && !isPickingRecipient && (
-                        <span>Tip: click any 2nd node on the map to start a DM &amp; probe route</span>
+                        <span>Tip: in CHAT, click the To: badge, then a node on the map, to start a DM &amp; probe route</span>
                     )}
                     {showChatTab && chatRecipientId && !isPickingRecipient && (
-                        <span>Click another node to re-target · Click empty space to clear</span>
+                        <span>Click the To: badge to re-target · Click empty space to clear</span>
                     )}
                 </div>
             </div>

@@ -8,6 +8,7 @@ import { BitchatPerson } from '../../simulation/BitchatPerson';
 import { getPeerColor } from '../../utils/colorUtils';
 import { useScreenAnchor } from './ScreenAnchors';
 import { useTerrain } from '../context/TerrainContext';
+import { useMotion } from '../context/MotionContext';
 
 const LABEL_ALL_THRESHOLD = 60;
 
@@ -15,9 +16,13 @@ type Role = 'from' | 'to' | 'hover' | 'follow' | null;
 
 const PeerLabel: React.FC<{ person: BitchatPerson; role: Role }> = ({ person, role }) => {
     const { heightAt } = useTerrain();
+    const motion = useMotion();
     const ref = useScreenAnchor(
         `label:${person.id}`,
-        () => ({ x: person.position.x, y: person.position.y, z: 2.75 + heightAt(person.position.x, person.position.y) }),
+        () => {
+            const p = motion.positionOf(person.id, person.position);
+            return { x: p.x, y: p.y, z: 2.75 + heightAt(p.x, p.y) };
+        },
         { maxDistance: role ? 3000 : 420 }
     );
     const color = getPeerColor(person.device.peerIDHex);

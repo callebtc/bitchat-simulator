@@ -11,6 +11,7 @@ import { Ground } from './world/Ground';
 import { CityLayer } from './world/CityLayer';
 import { TerrainSurface } from './world/TerrainSurface';
 import { useTerrain } from '../context/TerrainContext';
+import { MotionDriver } from '../context/MotionContext';
 import { useEnvironmentSnapshot } from './world/useEnvironmentSnapshot';
 import { computeSunState } from './world/sun';
 import { PeopleLayer } from './actors/PeopleLayer';
@@ -42,6 +43,7 @@ const SimWorld: React.FC = () => {
         <>
             <Atmosphere hour={timeOfDay} shadowMapSize={shadowMapSize} />
             <Ground night={night} hasCity={hasCity} baseHeight={field ? field.minHeight - 0.4 : 0} />
+            <MotionDriver />
             <CameraRig />
             <PointerController />
             <ScreenAnchorProjector />

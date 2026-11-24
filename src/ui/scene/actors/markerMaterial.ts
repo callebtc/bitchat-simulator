@@ -13,8 +13,9 @@ export enum MarkerState {
 }
 
 /**
- * Constant-pixel-size device markers. They fade out close to the camera
- * (where full 3D figures take over) and, in the `ghost` pass, render through
+ * Constant-pixel-size device markers. They represent every person without a
+ * 3D figure (far away, zoomed out, culled by the figure cap) and fade out
+ * where `aFigure` says a figure is drawn. The `ghost` pass renders through
  * buildings at low alpha so indoor devices are never lost.
  */
 export function createMarkerMaterial(ghost: boolean): THREE.ShaderMaterial {
@@ -26,6 +27,7 @@ export function createMarkerMaterial(ghost: boolean): THREE.ShaderMaterial {
             uniform float uPixelRatio;
             attribute vec3 color;
             attribute float aState;
+            attribute float aFigure;
             varying vec3 vColor;
             varying float vState;
             varying float vFade;
@@ -35,7 +37,10 @@ export function createMarkerMaterial(ghost: boolean): THREE.ShaderMaterial {
                 vColor = color;
                 vState = aState;
                 float emphasized = step(0.5, aState) * step(aState, 3.5);
-                vFade = max(smoothstep(16.0, 42.0, dist), emphasized * smoothstep(14.0, 26.0, dist));
+                // Dots stand in for people without a 3D figure; where a figure is drawn
+                // they cross-fade out (aFigure → 1). Emphasized dots stay until close.
+                float figureHide = aFigure * (1.0 - emphasized * smoothstep(14.0, 26.0, dist));
+                vFade = (1.0 - figureHide) * smoothstep(3.0, 8.0, dist);
                 float size = 7.5;
                 if (aState > 0.5 && aState < 1.5) size = 11.0;
                 else if (aState > 1.5 && aState < 3.5) size = 14.0;

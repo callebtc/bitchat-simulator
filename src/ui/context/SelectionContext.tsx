@@ -69,16 +69,20 @@ export const SelectionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const viewCenterRef = useRef({ x: 0, y: 0 });
     const focusNonceRef = useRef(0);
 
+    const selectedIdRef = useRef<string | null>(null);
     const select = useCallback((id: string | null, type: SelectionType | null) => {
+        // Re-clicking the current sender keeps its DM pair; any other selection drops it
+        if (!id || type !== 'node' || id !== selectedIdRef.current) {
+            setChatRecipientIdState(null);
+        }
+        selectedIdRef.current = id;
         setSelectedId(id);
         setSelectionType(type);
         setPickingRecipient(false);
-        if (!id || type !== 'node') {
-            setChatRecipientIdState(null);
-        }
     }, []);
 
     const selectChatPair = useCallback((senderPersonId: string, recipientPeerHex: string | null) => {
+        selectedIdRef.current = senderPersonId;
         setSelectedId(senderPersonId);
         setSelectionType('node');
         setChatRecipientIdState(recipientPeerHex);

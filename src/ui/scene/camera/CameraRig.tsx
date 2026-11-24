@@ -8,6 +8,7 @@ import { useSimulation } from '../../context/SimulationContext';
 import { useSelection } from '../../context/SelectionContext';
 import { useCamera } from '../../context/CameraContext';
 import { useTerrain } from '../../context/TerrainContext';
+import { useMotion } from '../../context/MotionContext';
 import { DEVICE_HEIGHT_M, EYE_HEIGHT_M, simToWorld, worldHeading } from '../coords';
 
 /**
@@ -52,6 +53,7 @@ export const CameraRig: React.FC = () => {
     const { focusRequest, isDragging, viewCenterRef } = useSelection();
     const { mode, followId, release, telemetryRef, resetNonce } = useCamera();
     const { heightAt } = useTerrain();
+    const motion = useMotion();
 
     const controlsRef = useRef<OrbitControlsImpl>(null);
     const keysRef = useRef<Set<string>>(new Set());
@@ -286,7 +288,8 @@ export const CameraRig: React.FC = () => {
 
             if (mode === 'fpv') {
                 c.enabled = false;
-                simToWorld(person.position.x, person.position.y, EYE_HEIGHT_M + heightAt(person.position.x, person.position.y), _personWorld);
+                const pos = motion.positionOf(person.id, person.position);
+                simToWorld(pos.x, pos.y, EYE_HEIGHT_M + heightAt(pos.x, pos.y), _personWorld);
                 const look = fpvLook.current;
                 const yaw = heading + look.yaw;
                 _forward.set(Math.sin(yaw) * Math.cos(look.pitch), Math.sin(look.pitch), -Math.cos(yaw) * Math.cos(look.pitch));
@@ -297,12 +300,8 @@ export const CameraRig: React.FC = () => {
                 if (flyRef.current) flyRef.current = null;
             } else {
                 c.enabled = !isDragging;
-                simToWorld(
-                    person.position.x,
-                    person.position.y,
-                    DEVICE_HEIGHT_M + heightAt(person.position.x, person.position.y),
-                    _personWorld
-                );
+                const pos = motion.positionOf(person.id, person.position);
+                simToWorld(pos.x, pos.y, DEVICE_HEIGHT_M + heightAt(pos.x, pos.y), _personWorld);
                 const activeFly = flyRef.current;
                 if (!activeFly) {
                     _delta.copy(_personWorld).sub(target).multiplyScalar(1 - Math.exp(-10 * delta));

@@ -415,7 +415,7 @@ export const ChatPanel: React.FC = () => {
                     <div className="h-full flex items-center justify-center text-gray-600 text-[11px]">
                         {chatRecipientId
                             ? `No messages with ${recipientPerson?.device.nickname ?? chatRecipientId.substring(0, 8)} yet — type below or click ⚡ PROBE PING to trace a DM live.`
-                            : 'Broadcast channel — click [BROADCAST] or any 2nd node on the map to probe & send a Direct Message.'}
+                            : 'Broadcast channel — click the To: badge, then a node on the map, to probe & send a Direct Message.'}
                     </div>
                 ) : (
                     displayedMessages.map(msg => {
