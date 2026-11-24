@@ -169,9 +169,8 @@ export const ChatPanel: React.FC = () => {
         const midY = (person.position.y + recipientPerson.position.y) * 0.5;
         const dx = Math.abs(person.position.x - recipientPerson.position.x);
         const dy = Math.abs(person.position.y - recipientPerson.position.y);
-        const span = Math.max(dx, dy, 80);
-        const targetZoom = Math.max(0.45, Math.min(3.5, 420 / span));
-        requestCameraFocus(midX, midY, targetZoom);
+        const span = Math.max(dx, dy, 40);
+        requestCameraFocus(midX, midY, Math.min(2500, span * 1.4 + 30));
     };
 
     const getDmDeliveryBadge = (msg: ChatMessage): React.ReactNode => {
@@ -219,14 +218,14 @@ export const ChatPanel: React.FC = () => {
     const badge = probe ? getProbeBadgeStyle(probe) : null;
 
     return (
-        <div className="flex flex-col h-full bg-black/95 font-mono text-xs">
+        <div className="flex h-full flex-col font-mono text-xs">
             {/* Row 1: Sender -> Interactive To: Picker & Actions */}
-            <div className="flex flex-wrap justify-between items-center gap-2 px-2.5 py-1.5 border-b border-gray-800 bg-gray-900/60 shrink-0">
+            <div className="flex flex-wrap justify-between items-center gap-2 px-2.5 py-1.5 border-b border-white/[0.06] bg-white/[0.02] shrink-0">
                 <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-[10px] text-gray-500 uppercase">From</span>
+                    <span className="text-[10px] text-slate-500 uppercase">From</span>
                     <span
                         style={{ color: getPeerColor(person.device.peerIDHex) }}
-                        className="font-bold bg-gray-900 px-1.5 py-0.5 rounded border border-cyan-800/60 truncate max-w-[140px]"
+                        className="font-bold bg-white/[0.04] px-1.5 py-0.5 rounded border border-cyan-800/60 truncate max-w-[140px]"
                         title={`Sender: ${person.device.nickname} (${person.device.peerIDHex})`}
                     >
                         {person.device.nickname} ({person.device.peerIDHex.substring(0, 6)})
@@ -235,16 +234,16 @@ export const ChatPanel: React.FC = () => {
                     {recipientPerson ? (
                         <button
                             onClick={handleSwapEndpoints}
-                            className="text-gray-400 hover:text-cyan-300 px-1 py-0.5 rounded border border-gray-700 hover:border-cyan-600 transition-colors"
+                            className="text-slate-400 hover:text-cyan-300 px-1 py-0.5 rounded border border-slate-700 hover:border-cyan-600 transition-colors"
                             title="Swap sender and recipient"
                         >
                             ⇄
                         </button>
                     ) : (
-                        <span className="text-gray-500">→</span>
+                        <span className="text-slate-500">→</span>
                     )}
 
-                    <span className="text-[10px] text-gray-500 uppercase">To</span>
+                    <span className="text-[10px] text-slate-500 uppercase">To</span>
 
                     {chatRecipientId ? (
                         <div className="flex items-center gap-1 bg-fuchsia-950/50 pl-2 pr-1 py-0.5 rounded border border-fuchsia-600/60">
@@ -296,7 +295,7 @@ export const ChatPanel: React.FC = () => {
                             className={`px-1.5 py-0.5 rounded text-[10px] border transition-colors ${
                                 isPickingRecipient
                                     ? 'bg-cyan-600/40 border-cyan-400 text-white'
-                                    : 'bg-gray-900 border-gray-700 text-gray-300 hover:border-cyan-500 hover:text-cyan-300'
+                                    : 'bg-white/[0.03] border-white/10 text-slate-300 hover:border-cyan-500 hover:text-cyan-300'
                             }`}
                             title="Pick another recipient on the map"
                         >
@@ -311,7 +310,7 @@ export const ChatPanel: React.FC = () => {
                         <>
                             <button
                                 onClick={handleFocusPair}
-                                className="px-2 py-0.5 rounded text-[10px] bg-gray-900 hover:bg-gray-800 border border-gray-700 text-cyan-300 transition-colors"
+                                className="px-2 py-0.5 rounded text-[10px] bg-white/[0.03] hover:bg-white/[0.07] border border-white/10 text-cyan-300 transition-colors"
                                 title="Pan & zoom camera to frame both nodes"
                             >
                                 ⌖ Focus Pair
@@ -321,7 +320,7 @@ export const ChatPanel: React.FC = () => {
                                 className={`px-2 py-0.5 rounded text-[10px] border transition-colors ${
                                     filterDmOnly
                                         ? 'bg-fuchsia-950/50 border-fuchsia-700/60 text-fuchsia-200'
-                                        : 'bg-gray-900 border-gray-700 text-gray-400'
+                                        : 'bg-white/[0.03] border-white/10 text-slate-400'
                                 }`}
                                 title="Toggle between this DM thread and all messages on this node"
                             >
@@ -329,7 +328,7 @@ export const ChatPanel: React.FC = () => {
                             </button>
                         </>
                     )}
-                    <label className="flex items-center gap-1 cursor-pointer select-none text-[10px] text-gray-300">
+                    <label className="flex items-center gap-1 cursor-pointer select-none text-[10px] text-slate-300">
                         <input
                             type="checkbox"
                             checked={autoScroll}
@@ -342,7 +341,7 @@ export const ChatPanel: React.FC = () => {
 
             {/* Row 2: Live Connection & Route Probe Bar (shown for active DM or live hover preview) */}
             {probe && badge && (
-                <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1 border-b border-gray-800/80 bg-gray-950/90 text-[10px] shrink-0">
+                <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1 border-b border-white/[0.05] bg-transparent text-[10px] shrink-0">
                     <div className="flex items-center gap-2 min-w-0">
                         {isPickingRecipient && previewPerson && (
                             <span className="text-cyan-400 uppercase font-bold">
@@ -355,11 +354,11 @@ export const ChatPanel: React.FC = () => {
                             <span className={`w-1.5 h-1.5 rounded-full ${badge.dotClass}`} />
                             {badge.label}
                         </span>
-                        <span className="text-gray-300">{badge.detail}</span>
+                        <span className="text-slate-300">{badge.detail}</span>
 
                         {probe.displayPath && probe.displayPath.length >= 2 && (
                             <span
-                                className="text-gray-500 truncate max-w-[340px]"
+                                className="text-slate-500 truncate max-w-[340px]"
                                 title={probe.displayPath.join(' → ')}
                             >
                                 Path:{' '}
@@ -380,7 +379,7 @@ export const ChatPanel: React.FC = () => {
                                     ? 'bg-emerald-950/60 border-emerald-700/60 text-emerald-300'
                                     : probe.noiseState === 'handshaking'
                                       ? 'bg-purple-950/60 border-purple-700/60 text-purple-300'
-                                      : 'bg-gray-900 border-gray-700 text-gray-400'
+                                      : 'bg-white/[0.03] border-white/10 text-slate-400'
                             }`}
                         >
                             Noise:{' '}
@@ -413,10 +412,10 @@ export const ChatPanel: React.FC = () => {
             {/* Message History */}
             <div className="flex-1 overflow-y-auto px-2.5 py-1.5 space-y-1">
                 {displayedMessages.length === 0 ? (
-                    <div className="h-full flex items-center justify-center text-gray-600 text-[11px]">
+                    <div className="h-full flex items-center justify-center text-slate-600 text-[11px]">
                         {chatRecipientId
                             ? `No messages with ${recipientPerson?.device.nickname ?? chatRecipientId.substring(0, 8)} yet — type below or click ⚡ PROBE PING to trace a DM live.`
-                            : 'Broadcast channel — click [BROADCAST] or any 2nd node on the map to probe & send a Direct Message.'}
+                            : 'Broadcast channel — click the To: badge, then a node on the map, to probe & send a Direct Message.'}
                     </div>
                 ) : (
                     displayedMessages.map(msg => {
@@ -442,7 +441,7 @@ export const ChatPanel: React.FC = () => {
 
                                 {msg.recipientId && (
                                     <>
-                                        <span className="text-gray-500 mx-1">→</span>
+                                        <span className="text-slate-500 mx-1">→</span>
                                         <span
                                             className="font-bold"
                                             style={{ color: getPeerColor(msg.recipientId) }}
@@ -453,7 +452,7 @@ export const ChatPanel: React.FC = () => {
                                     </>
                                 )}
 
-                                <span className="ml-2 text-gray-100">{msg.text}</span>
+                                <span className="ml-2 text-slate-100">{msg.text}</span>
                                 {getDmDeliveryBadge(msg)}
                             </div>
                         );
@@ -463,11 +462,11 @@ export const ChatPanel: React.FC = () => {
             </div>
 
             {/* Input */}
-            <div className="px-2.5 py-1.5 border-t border-gray-800 flex gap-2 shrink-0 bg-gray-950/80">
+            <div className="px-2.5 py-1.5 border-t border-white/[0.06] flex gap-2 shrink-0 bg-white/[0.02]">
                 <input
                     ref={inputRef}
                     type="text"
-                    className="flex-1 bg-gray-900 border border-gray-700 rounded px-2.5 py-1 text-white focus:border-cyan-500 focus:outline-none"
+                    className="flex-1 rounded-lg border border-white/10 bg-black/30 px-2.5 py-1 text-white focus:border-cyan-400/60 focus:outline-none"
                     placeholder={
                         recipientPerson
                             ? `Send encrypted DM to ${recipientPerson.device.nickname}...`

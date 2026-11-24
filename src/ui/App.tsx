@@ -7,12 +7,18 @@ import { MainControlPanel } from './hud/MainControlPanel';
 import { BottomPanel } from './hud/BottomPanel';
 
 import { setupDemo } from '../simulation/DemoSetup';
+import { MovementMode } from '../simulation/BitchatPerson';
 import { probePeerRoute } from '../simulation/MeshProbe';
 
 import { LayoutProvider } from './context/LayoutContext';
-import { ScaleProvider } from './context/ScaleContext';
-import { ScaleOverlay } from './hud/ScaleIndicator';
 import { VisualizationProvider } from './context/VisualizationContext';
+import { CameraProvider } from './context/CameraContext';
+import { TerrainProvider } from './context/TerrainContext';
+import { MotionProvider } from './context/MotionContext';
+import { PeerLabels } from './overlays/PeerLabels';
+import { ChatBubbles } from './overlays/ChatBubbles';
+import { ViewShortcuts } from './hud/ViewSection';
+import { DevicePhone } from './hud/DevicePhone';
 
 const SimulationController = () => {
     const engine = useSimulation();
@@ -21,7 +27,7 @@ const SimulationController = () => {
     useEffect(() => {
         const handleReset = () => select(null, null);
         engine.events.on('reset', handleReset);
-        setupDemo(engine, 5); // Auto init
+        setupDemo(engine, 5, { initialMode: MovementMode.RANDOM_WALK }); // Auto init: people strolling
         engine.start();
         return () => {
             engine.events.off('reset', handleReset);
@@ -46,7 +52,7 @@ const RecipientPickBanner = () => {
             : null;
 
     return (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-30 pointer-events-auto bg-black/90 border border-cyan-500/70 rounded px-3.5 py-2 shadow-2xl font-mono text-xs text-cyan-100 flex items-center gap-3 backdrop-blur-md">
+        <div className="fixed top-3 left-1/2 -translate-x-1/2 z-30 pointer-events-auto bg-black/90 border border-cyan-500/70 rounded px-3.5 py-2 shadow-2xl font-mono text-xs text-cyan-100 flex items-center gap-3 backdrop-blur-md">
             <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
             <span>
                 Click any node on the map to DM from{' '}
@@ -88,12 +94,17 @@ const LayoutContent = () => {
     return (
         <SelectionProvider>
             <SimulationController />
-            <Scene />
-            <RecipientPickBanner />
-            <MainControlPanel />
-            <InspectorPanel />
-            <BottomPanel />
-            <ScaleOverlay />
+            <CameraProvider>
+                <Scene />
+                <PeerLabels />
+                <ChatBubbles />
+                <ViewShortcuts />
+                <RecipientPickBanner />
+                <MainControlPanel />
+                <InspectorPanel />
+                <DevicePhone />
+                <BottomPanel />
+            </CameraProvider>
         </SelectionProvider>
     );
 };
@@ -101,13 +112,15 @@ const LayoutContent = () => {
 function App() {
     return (
         <LayoutProvider>
-            <ScaleProvider>
-                <VisualizationProvider>
-                    <SimulationProvider>
-                        <LayoutContent />
-                    </SimulationProvider>
-                </VisualizationProvider>
-            </ScaleProvider>
+            <VisualizationProvider>
+                <SimulationProvider>
+                    <TerrainProvider>
+                        <MotionProvider>
+                            <LayoutContent />
+                        </MotionProvider>
+                    </TerrainProvider>
+                </SimulationProvider>
+            </VisualizationProvider>
         </LayoutProvider>
     );
 }

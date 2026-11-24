@@ -3,9 +3,11 @@ import React, { createContext, useContext, useState, useRef, useCallback, useMem
 export type SelectionType = 'node' | 'connection';
 
 export interface CameraFocusRequest {
+    /** Simulation-space target (meters). */
     x: number;
     y: number;
-    zoom?: number;
+    /** Desired camera distance from target (meters); keeps current distance when omitted. */
+    distance?: number;
     nonce: number;
 }
 
@@ -31,7 +33,7 @@ interface SelectionContextType {
     setDragging: (dragging: boolean) => void;
     setHighlightedId: (id: string | null) => void;
     setViewCenter: (pos: { x: number; y: number }) => void;
-    requestCameraFocus: (x: number, y: number, zoom?: number) => void;
+    requestCameraFocus: (x: number, y: number, distance?: number) => void;
 }
 
 const defaultViewCenterRef = { current: { x: 0, y: 0 } };
@@ -67,16 +69,20 @@ export const SelectionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     const viewCenterRef = useRef({ x: 0, y: 0 });
     const focusNonceRef = useRef(0);
 
+    const selectedIdRef = useRef<string | null>(null);
     const select = useCallback((id: string | null, type: SelectionType | null) => {
+        // Re-clicking the current sender keeps its DM pair; any other selection drops it
+        if (!id || type !== 'node' || id !== selectedIdRef.current) {
+            setChatRecipientIdState(null);
+        }
+        selectedIdRef.current = id;
         setSelectedId(id);
         setSelectionType(type);
         setPickingRecipient(false);
-        if (!id || type !== 'node') {
-            setChatRecipientIdState(null);
-        }
     }, []);
 
     const selectChatPair = useCallback((senderPersonId: string, recipientPeerHex: string | null) => {
+        selectedIdRef.current = senderPersonId;
         setSelectedId(senderPersonId);
         setSelectionType('node');
         setChatRecipientIdState(recipientPeerHex);
@@ -95,9 +101,9 @@ export const SelectionProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         viewCenterRef.current.y = pos.y;
     }, []);
 
-    const requestCameraFocus = useCallback((x: number, y: number, zoom?: number) => {
+    const requestCameraFocus = useCallback((x: number, y: number, distance?: number) => {
         focusNonceRef.current += 1;
-        setFocusRequest({ x, y, zoom, nonce: focusNonceRef.current });
+        setFocusRequest({ x, y, distance, nonce: focusNonceRef.current });
     }, []);
 
     const value = useMemo<SelectionContextType>(

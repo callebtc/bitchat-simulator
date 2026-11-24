@@ -121,6 +121,14 @@ export class NoiseSessionManager {
         }
 
         if (step === 2) {
+            // Duplicate msg2 after we already finished: our msg3 was lost (or the
+            // responder restarted). Re-send msg3 so the responder can complete.
+            if (existing?.state === 'established' && existing.isInitiator) {
+                return {
+                    responsePayload: this.buildHandshakePayload(3, NOISE_HANDSHAKE_SIZES.MSG3_BYTES),
+                    becameEstablished: false,
+                };
+            }
             if (!existing || existing.state !== 'initiator_sent_msg1') {
                 return { becameEstablished: false };
             }

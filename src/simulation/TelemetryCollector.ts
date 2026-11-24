@@ -25,7 +25,9 @@ export type DropReason =
     | 'cancelled_relay'
     | 'duplicate_hop'
     | 'fragment_timeout'
-    | 'outbox_expired';
+    | 'outbox_expired'
+    /** Private DM abandoned after exhausting delivery-ACK resend attempts. */
+    | 'dm_unacked';
 
 export interface DeliveryRecord {
     recipientId: string;
@@ -107,6 +109,7 @@ function emptyDropRecord(): Record<DropReason, number> {
         duplicate_hop: 0,
         fragment_timeout: 0,
         outbox_expired: 0,
+        dm_unacked: 0,
     };
 }
 
