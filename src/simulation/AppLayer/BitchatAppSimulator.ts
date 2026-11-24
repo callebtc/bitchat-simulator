@@ -31,6 +31,36 @@ import { LogManager } from '../LogManager';
 import { ScheduledEventHandle } from '../EventScheduler';
 import { getPeerColor } from '../../utils/colorUtils';
 
+interface DecodedAnnounceCacheEntry {
+    nickname: string;
+    noiseKeyBytes?: Uint8Array;
+    signingKeyBytes?: Uint8Array;
+    neighborHexes: string[];
+    capabilities?: number;
+}
+
+const decodedAnnounceCache = new WeakMap<Uint8Array, DecodedAnnounceCacheEntry>();
+
+function decodeAnnounceCached(payload: Uint8Array): DecodedAnnounceCacheEntry {
+    const cached = decodedAnnounceCache.get(payload);
+    if (cached) return cached;
+    const tlvs = TLV.decode(payload);
+    const nickBytes = tlvs.get(TLVType.NICKNAME);
+    const noiseKeyBytes = tlvs.get(TLVType.NOISE_PUBLIC_KEY);
+    const signingKeyBytes = tlvs.get(TLVType.SIGNING_PUBLIC_KEY);
+    const neighborsBytes = tlvs.get(TLVType.DIRECT_NEIGHBORS);
+    const capBytes = tlvs.get(TLVType.CAPABILITIES);
+    const entry: DecodedAnnounceCacheEntry = {
+        nickname: nickBytes ? TLV.decodeNickname(nickBytes) : 'Unknown',
+        noiseKeyBytes,
+        signingKeyBytes,
+        neighborHexes: neighborsBytes ? TLV.decodeNeighbors(neighborsBytes).map(toHex) : [],
+        capabilities: capBytes ? TLV.decodeCapabilities(capBytes) : undefined,
+    };
+    decodedAnnounceCache.set(payload, entry);
+    return entry;
+}
+
 export interface ChatMessage {
     id: string;
     timestamp: number;
@@ -1073,20 +1103,13 @@ export class BitchatAppSimulator implements DeviceTickable {
         hops: number,
         transportName: string
     ): void {
-        const tlvs = TLV.decode(packet.payload);
-        const nickBytes = tlvs.get(TLVType.NICKNAME);
-        const noiseKeyBytes = tlvs.get(TLVType.NOISE_PUBLIC_KEY);
-        const signingKeyBytes = tlvs.get(TLVType.SIGNING_PUBLIC_KEY);
-        const neighborsBytes = tlvs.get(TLVType.DIRECT_NEIGHBORS);
-        const capBytes = tlvs.get(TLVType.CAPABILITIES);
+        const decoded = decodeAnnounceCached(packet.payload);
         const senderHex = toHex(packet.senderID);
-
-        const nickname = nickBytes ? TLV.decodeNickname(nickBytes) : 'Unknown';
-        const capabilities = capBytes ? TLV.decodeCapabilities(capBytes) : undefined;
+        const { nickname, noiseKeyBytes, signingKeyBytes, neighborHexes, capabilities } = decoded;
 
         // DirectLinkAnnouncementPolicy: direct observation ONLY when ttl === maxTtl
         const isDirectTtl = packet.ttl === this.policy.maxTtl;
-        const wasVerifiedDirect = this.peerManager.getVerifiedDirectPeerIDs().includes(senderHex);
+        const wasVerifiedDirect = this.peerManager.isVerifiedDirectPeer(senderHex);
         if (isDirectTtl && ingressConnection) {
             this.linkPeerBindings.set(ingressConnection.linkID, senderHex);
             // Schedule initial peer gossip sync 1 s (+ small jitter) after direct peer binding
@@ -1116,9 +1139,6 @@ export class BitchatAppSimulator implements DeviceTickable {
         this.gossipSync.onPublicPacketSeen(packet, nowMs);
 
         // Update MeshGraph with timestamp ordering and 10-neighbor cap
-        const neighborHexes = neighborsBytes
-            ? TLV.decodeNeighbors(neighborsBytes).map(toHex)
-            : [];
         this.meshGraph.updateFromAnnouncement(
             senderHex,
             neighborHexes,

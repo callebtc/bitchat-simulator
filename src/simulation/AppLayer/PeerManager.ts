@@ -101,6 +101,12 @@ export class PeerManager {
         return this.peers.size;
     }
 
+    isVerifiedDirectPeer(peerID: string): boolean {
+        const peer = this.peers.get(peerID);
+        if (!peer || !peer.isVerified) return false;
+        return this.isPeerDirectlyConnected ? this.isPeerDirectlyConnected(peerID) : peer.isDirect;
+    }
+
     getVerifiedDirectPeerIDs(): string[] {
         const direct: string[] = [];
         for (const info of this.peers.values()) {

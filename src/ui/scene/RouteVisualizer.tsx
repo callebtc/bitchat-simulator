@@ -3,14 +3,15 @@ import { useFrame } from '@react-three/fiber';
 import { Line } from '@react-three/drei';
 import { useSimulation } from '../context/SimulationContext';
 import * as THREE from 'three';
-import { BitchatPacket } from '../../protocol/BitchatPacket';
+import { BitchatPacket, toHex } from '../../protocol/BitchatPacket';
 
 const FLASH_DURATION = 800; // ms
-const FLASH_COLOR = '#FFC107'; // Golden Orange
+const FLASH_COLOR = '#FFC107';
+const MAX_CONCURRENT_FLASHES = 24;
 
 interface ActiveFlash {
     id: string;
-    pathIds: string[]; // [Sender, ...Hops, Recipient]
+    pathIds: string[];
     startTime: number;
 }
 
@@ -19,40 +20,37 @@ export const RouteVisualizer: React.FC = () => {
     const [flashes, setFlashes] = useState<ActiveFlash[]>([]);
 
     useEffect(() => {
-        const handlePacket = (data: { connectionId: string, packet: BitchatPacket, fromId: string }) => {
+        const handlePacket = (data: {
+            connectionId: string;
+            packet: BitchatPacket;
+            fromId: string;
+        }) => {
             const { packet, fromId } = data;
-
-            // 1. Check if source-routed
             if (!packet.route || packet.route.length === 0) return;
 
-            // 2. Check if Originator (Sender == From)
-            const senderHex = Array.from(packet.senderID)
-                .map(b => b.toString(16).padStart(2, '0')).join('');
-            
+            const senderHex = toHex(packet.senderID);
             if (senderHex !== fromId) return;
 
-            // 3. Construct Path IDs
-            const recipientHex = packet.recipientID 
-                ? Array.from(packet.recipientID).map(b => b.toString(16).padStart(2, '0')).join('')
-                : null;
-            
-            if (!recipientHex) return; // Should not happen for routed packets
+            const recipientHex = packet.recipientID ? toHex(packet.recipientID) : null;
+            if (!recipientHex) return;
 
-            const routeHexes = packet.route.map(r => 
-                Array.from(r).map(b => b.toString(16).padStart(2, '0')).join('')
-            );
-
+            const routeHexes = packet.route.map(toHex);
             const fullPath = [senderHex, ...routeHexes, recipientHex];
 
-            // 4. Add Flash
-            setFlashes(prev => [
-                ...prev,
-                {
-                    id: Math.random().toString(36).substr(2, 9),
-                    pathIds: fullPath,
-                    startTime: performance.now()
-                }
-            ]);
+            setFlashes(prev => {
+                const next =
+                    prev.length >= MAX_CONCURRENT_FLASHES
+                        ? prev.slice(prev.length - MAX_CONCURRENT_FLASHES + 1)
+                        : prev;
+                return [
+                    ...next,
+                    {
+                        id: `${performance.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                        pathIds: fullPath,
+                        startTime: performance.now(),
+                    },
+                ];
+            });
         };
 
         engine.events.on('packet_transmitted', handlePacket);
@@ -61,7 +59,6 @@ export const RouteVisualizer: React.FC = () => {
         };
     }, [engine]);
 
-    // Prune old flashes
     useFrame(() => {
         if (flashes.length === 0) return;
         const now = performance.now();
@@ -83,49 +80,33 @@ export const RouteVisualizer: React.FC = () => {
 const FlashInstance: React.FC<{ flash: ActiveFlash }> = ({ flash }) => {
     const engine = useSimulation();
     const lineRef = useRef<any>(null);
-    const [opacity, setOpacity] = useState(1);
-    
-    // Helper to find person by device ID
-    const getPersonByDeviceId = (deviceIdHex: string) => {
-        return engine.getAllPeople().find(p => p.device.peerIDHex === deviceIdHex);
-    };
-    
-    // Calculate points every frame to follow moving nodes
+
     useFrame(() => {
-        const now = performance.now();
-        const elapsed = now - flash.startTime;
+        if (!lineRef.current) return;
+        const elapsed = performance.now() - flash.startTime;
         const progress = Math.min(elapsed / FLASH_DURATION, 1);
-        
-        // Fade out
-        setOpacity(1 - Math.pow(progress, 2)); // Ease out
 
-        if (lineRef.current) {
-             const currentPoints: THREE.Vector3[] = [];
-             let valid = true;
-             
-             for (const id of flash.pathIds) {
-                 const person = getPersonByDeviceId(id);
-                 if (person) {
-                     currentPoints.push(new THREE.Vector3(person.position.x, person.position.y, 10)); 
-                 } else {
-                     valid = false;
-                     break;
-                 }
-             }
+        // Mutate material opacity directly in useFrame (zero React re-renders!)
+        if (lineRef.current.material) {
+            lineRef.current.material.opacity = 1 - progress * progress;
+        }
 
-             if (valid && currentPoints.length > 1) {
-                 lineRef.current.geometry.setPositions(
-                     currentPoints.flatMap(p => [p.x, p.y, 10]) // Line2 expects flat array
-                 );
-             }
+        const flat: number[] = [];
+        for (let i = 0; i < flash.pathIds.length; i++) {
+            const person = engine.getPersonByPeerId(flash.pathIds[i]);
+            if (!person) return;
+            flat.push(person.position.x, person.position.y, 10);
+        }
+        if (flat.length >= 6 && lineRef.current.geometry?.setPositions) {
+            lineRef.current.geometry.setPositions(flat);
         }
     });
 
-    // Initial check for validity to prevent render if nodes missing
-    const initialPoints = flash.pathIds.map(id => {
-        const p = getPersonByDeviceId(id);
-        return p ? new THREE.Vector3(p.position.x, p.position.y, 10) : null;
-    }).filter(Boolean) as THREE.Vector3[];
+    const initialPoints: THREE.Vector3[] = [];
+    for (let i = 0; i < flash.pathIds.length; i++) {
+        const p = engine.getPersonByPeerId(flash.pathIds[i]);
+        if (p) initialPoints.push(new THREE.Vector3(p.position.x, p.position.y, 10));
+    }
 
     if (initialPoints.length < 2) return null;
 
@@ -136,8 +117,8 @@ const FlashInstance: React.FC<{ flash: ActiveFlash }> = ({ flash }) => {
             color={FLASH_COLOR}
             lineWidth={4}
             transparent
-            opacity={opacity}
-            depthTest={false} // Draw on top
+            opacity={1}
+            depthTest={false}
             renderOrder={100}
         />
     );

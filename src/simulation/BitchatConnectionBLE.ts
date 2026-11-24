@@ -3,8 +3,20 @@ import { BitchatPacket, toHex } from '../protocol/BitchatPacket';
 import { BinaryProtocol } from '../protocol/BinaryProtocol';
 import { BitchatDevice } from './BitchatDevice';
 import { EnvironmentManager, calculateLineAttenuationStats } from './environment';
+import type { AttenuationStats } from './environment/LineOfSight';
 import { SeededRandom } from './SeededRandom';
 import { RadioMedium } from './RadioMedium';
+
+const bleWireSizeCache = new WeakMap<BitchatPacket, number>();
+
+function getBleWireBytes(packet: BitchatPacket): number {
+    const cached = bleWireSizeCache.get(packet);
+    if (cached !== undefined) return cached;
+    const encoded = BinaryProtocol.encode(packet);
+    const bytes = encoded ? encoded.length : packet.payload.length + 22;
+    bleWireSizeCache.set(packet, bytes);
+    return bytes;
+}
 
 /**
  * BLE GATT Link Model aligned with Android BluetoothPacketBroadcaster.kt:
@@ -59,6 +71,7 @@ interface PendingGattSend {
 
 interface DirectionQueue {
     items: PendingGattSend[];
+    head: number;
     pendingBytes: number;
     inFlight: boolean;
 }
@@ -80,13 +93,21 @@ export class BitchatConnectionBLE extends BitchatConnection {
     lastSinrDb: number | null = null;
     lastMeasuredLatencyMs: number = 20;
 
+    // Cached building line-of-sight attenuation (invalidated when either endpoint moves >= 0.75 m)
+    private cachedAtten: AttenuationStats | null = null;
+    private cachedPosAX: number = NaN;
+    private cachedPosAY: number = NaN;
+    private cachedPosBX: number = NaN;
+    private cachedPosBY: number = NaN;
+    private cachedBuildingCount: number = -1;
+
     // Environment & shared RF medium references (set by SimulationEngine)
     environment: EnvironmentManager | null = null;
     radioMedium: RadioMedium | null = null;
 
-    // Separate serialized FIFO queues for client-write and server-notify directions
-    private clientWriteQueue: DirectionQueue = { items: [], pendingBytes: 0, inFlight: false };
-    private serverNotifyQueue: DirectionQueue = { items: [], pendingBytes: 0, inFlight: false };
+    // Separate serialized FIFO queues for client-write and server-notify directions (O(1) head pointer)
+    private clientWriteQueue: DirectionQueue = { items: [], head: 0, pendingBytes: 0, inFlight: false };
+    private serverNotifyQueue: DirectionQueue = { items: [], head: 0, pendingBytes: 0, inFlight: false };
 
     constructor(
         endpointA: BitchatDevice,
@@ -170,23 +191,27 @@ export class BitchatConnectionBLE extends BitchatConnection {
     }
 
     getQueueDepth(): number {
-        return this.clientWriteQueue.items.length + this.serverNotifyQueue.items.length;
+        return (
+            this.clientWriteQueue.items.length -
+            this.clientWriteQueue.head +
+            (this.serverNotifyQueue.items.length - this.serverNotifyQueue.head)
+        );
     }
 
     send(packet: BitchatPacket, from: BitchatDevice, nowMs?: number): boolean {
         if (!this.isActive || !this.isReady) return false;
 
         const now = nowMs ?? this.clock();
-        const encoded = BinaryProtocol.encode(packet);
-        const wireBytes = encoded ? encoded.length : packet.payload.length + 22;
+        const wireBytes = getBleWireBytes(packet);
 
         // If scheduler is attached (full SimulationEngine run), use serialized GATT queue + RadioMedium
         if (this.scheduler) {
             const queue =
                 from === this.initiator ? this.clientWriteQueue : this.serverNotifyQueue;
 
+            const depth = queue.items.length - queue.head;
             if (
-                queue.items.length >= BLE_QUEUE_CONFIG.MAX_PENDING_SENDS_PER_LINK ||
+                depth >= BLE_QUEUE_CONFIG.MAX_PENDING_SENDS_PER_LINK ||
                 queue.pendingBytes + wireBytes > BLE_QUEUE_CONFIG.MAX_PENDING_BYTES_PER_LINK
             ) {
                 this.packetsDropped++;
@@ -231,7 +256,7 @@ export class BitchatConnectionBLE extends BitchatConnection {
             queue.inFlight = false;
             return;
         }
-        const head = queue.items[0];
+        const head = queue.items[queue.head];
         if (!head) {
             queue.inFlight = false;
             return;
@@ -318,8 +343,15 @@ export class BitchatConnectionBLE extends BitchatConnection {
                     return;
                 }
 
-                // Pop completed (or exhausted) head item
-                queue.items.shift();
+                // Pop completed (or exhausted) head item in O(1)
+                queue.head++;
+                if (queue.head >= queue.items.length) {
+                    queue.items.length = 0;
+                    queue.head = 0;
+                } else if (queue.head > 64 && queue.head * 2 >= queue.items.length) {
+                    queue.items = queue.items.slice(queue.head);
+                    queue.head = 0;
+                }
                 queue.pendingBytes = Math.max(0, queue.pendingBytes - head.wireBytes);
 
                 if (failed) {
@@ -333,7 +365,7 @@ export class BitchatConnectionBLE extends BitchatConnection {
                     target.receivePacket(head.packet, head.from, this);
                 }
 
-                if (queue.items.length > 0) {
+                if (queue.head < queue.items.length) {
                     this.startNextGattOp(queue, doneMs);
                 } else {
                     queue.inFlight = false;
@@ -350,16 +382,66 @@ export class BitchatConnectionBLE extends BitchatConnection {
         const posB = this.endpointB.position;
         if (!posA || !posB) return true;
 
-        const stats = BitchatConnectionBLE.calculateTargetRSSI(
-            posA,
-            posB,
-            this.endpointA.bluetoothStrength,
-            this.endpointB.bluetoothStrength,
-            this.environment
-        );
+        const dx = posA.x - posB.x;
+        const dy = posA.y - posB.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        const effectiveDistance = distance > 0.1 ? distance : 0.1;
+        const pathLoss = 10 * RSSI_CONFIG.PATH_LOSS_EXPONENT * Math.log10(effectiveDistance);
 
-        this.lastStats = stats;
-        this.rssiTarget = stats.targetRSSI;
+        let wallLoss = 0;
+        let materialLoss = 0;
+        let wallsCrossed = 0;
+
+        if (this.environment) {
+            const bCount = this.environment.getBuildingCount();
+            if (bCount > 0) {
+                const movedASq =
+                    (posA.x - this.cachedPosAX) * (posA.x - this.cachedPosAX) +
+                    (posA.y - this.cachedPosAY) * (posA.y - this.cachedPosAY);
+                const movedBSq =
+                    (posB.x - this.cachedPosBX) * (posB.x - this.cachedPosBX) +
+                    (posB.y - this.cachedPosBY) * (posB.y - this.cachedPosBY);
+
+                // Recompute building raycast only when an endpoint moved >= 0.75 m or map changed
+                if (
+                    this.cachedAtten === null ||
+                    this.cachedBuildingCount !== bCount ||
+                    movedASq >= 0.5625 ||
+                    movedBSq >= 0.5625
+                ) {
+                    const buildingsInPath = this.environment.getBuildingsInPath(posA, posB);
+                    this.cachedAtten =
+                        buildingsInPath.length > 0
+                            ? calculateLineAttenuationStats(posA, posB, buildingsInPath)
+                            : { total: 0, wallLoss: 0, materialLoss: 0, wallsCrossed: 0 };
+                    this.cachedPosAX = posA.x;
+                    this.cachedPosAY = posA.y;
+                    this.cachedPosBX = posB.x;
+                    this.cachedPosBY = posB.y;
+                    this.cachedBuildingCount = bCount;
+                }
+                wallLoss = this.cachedAtten.wallLoss;
+                materialLoss = this.cachedAtten.materialLoss;
+                wallsCrossed = this.cachedAtten.wallsCrossed;
+            }
+        }
+
+        const gainA = 10 * Math.log10(Math.max(1, this.endpointA.bluetoothStrength) / 50);
+        const gainB = 10 * Math.log10(Math.max(1, this.endpointB.bluetoothStrength) / 50);
+        const totalGain = gainA + gainB;
+        const targetRSSI = RSSI_CONFIG.AT_1M - pathLoss - wallLoss - materialLoss + totalGain;
+
+        this.lastStats = {
+            distance: effectiveDistance,
+            pathLoss,
+            wallLoss,
+            materialLoss,
+            wallsCrossed,
+            gain: totalGain,
+            totalLoss: pathLoss + wallLoss + materialLoss - totalGain,
+            targetRSSI,
+        };
+        this.rssiTarget = targetRSSI;
 
         const dtSec =
             this.lastRssiUpdateMs !== null ? Math.max(0, (now - this.lastRssiUpdateMs) * 0.001) : 0;
@@ -391,9 +473,11 @@ export class BitchatConnectionBLE extends BitchatConnection {
     override close(): void {
         super.close();
         this.clientWriteQueue.items.length = 0;
+        this.clientWriteQueue.head = 0;
         this.clientWriteQueue.pendingBytes = 0;
         this.clientWriteQueue.inFlight = false;
         this.serverNotifyQueue.items.length = 0;
+        this.serverNotifyQueue.head = 0;
         this.serverNotifyQueue.pendingBytes = 0;
         this.serverNotifyQueue.inFlight = false;
     }

@@ -12,6 +12,8 @@ import { LogManager } from './LogManager';
 export class ConnectionManager {
     private owner: BitchatDevice;
     private connections: Map<string, BitchatConnection> = new Map();
+    private activeCache: BitchatConnection[] = [];
+    private activeCacheDirty: boolean = false;
     private logger?: LogManager;
 
     constructor(owner: BitchatDevice) {
@@ -24,6 +26,7 @@ export class ConnectionManager {
 
     addConnection(connection: BitchatConnection): void {
         this.connections.set(connection.id, connection);
+        this.activeCacheDirty = true;
         this.logger?.log('DEBUG', 'DEVICE', 'Connection Added', this.owner.peerIDHex, {
             connId: connection.id,
         });
@@ -32,6 +35,7 @@ export class ConnectionManager {
 
     removeConnection(connectionId: string): void {
         this.connections.delete(connectionId);
+        this.activeCacheDirty = true;
         this.logger?.log('DEBUG', 'DEVICE', 'Connection Removed', this.owner.peerIDHex, {
             connId: connectionId,
         });
@@ -120,6 +124,7 @@ export class ConnectionManager {
                 connId: conn.id,
             });
             conn.close();
+            this.activeCacheDirty = true;
         }
     }
 
@@ -161,9 +166,20 @@ export class ConnectionManager {
     }
 
     getActiveConnections(transport?: TransportKind): BitchatConnection[] {
+        if (!transport) {
+            if (this.activeCacheDirty) {
+                const active: BitchatConnection[] = [];
+                this.connections.forEach(conn => {
+                    if (conn.isActive) active.push(conn);
+                });
+                this.activeCache = active;
+                this.activeCacheDirty = false;
+            }
+            return this.activeCache;
+        }
         const active: BitchatConnection[] = [];
         this.connections.forEach(conn => {
-            if (conn.isActive && (!transport || conn.transportType === transport)) {
+            if (conn.isActive && conn.transportType === transport) {
                 active.push(conn);
             }
         });

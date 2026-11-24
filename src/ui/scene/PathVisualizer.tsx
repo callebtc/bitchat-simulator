@@ -33,10 +33,10 @@ export const PathVisualizer: React.FC = () => {
     const { highlightedId } = useSelection();
     const [animatedPath, setAnimatedPath] = useState<AnimatedPath | null>(null);
     
-    // Find the person being hovered (match by peerIdHex)
+    // Find the person being hovered (O(1) peerID lookup)
     const hoveredPerson = useMemo(() => {
         if (!highlightedId) return null;
-        return engine.getAllPeople().find(p => p.device.peerIDHex === highlightedId) ?? null;
+        return engine.getPersonByPeerId(highlightedId) ?? null;
     }, [highlightedId, engine]);
 
     // Subscribe to path calculation events
