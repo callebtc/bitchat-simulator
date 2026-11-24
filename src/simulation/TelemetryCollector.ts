@@ -165,10 +165,10 @@ export class TelemetryCollector {
     private connectionsBroken: number = 0;
     private dualLinksObserved: number = 0;
 
-    // O(1) 60-second circular 1-second histogram buckets (zero allocations per packet!)
-    private bucketSec: Int32Array = new Int32Array(60).fill(-1);
-    private bucketPkts: Uint32Array = new Uint32Array(60);
-    private bucketBytes: Float64Array = new Float64Array(60);
+    // O(1) 60-second circular 100ms-resolution histogram buckets (600 slots, zero allocations per packet, smooth 1s rate!)
+    private bucketTick: Int32Array = new Int32Array(600).fill(-1);
+    private bucketPkts: Uint32Array = new Uint32Array(600);
+    private bucketBytes: Float64Array = new Float64Array(600);
 
     reset(): void {
         this.trackedMessages.clear();
@@ -188,7 +188,7 @@ export class TelemetryCollector {
         this.connectionsFailed = 0;
         this.connectionsBroken = 0;
         this.dualLinksObserved = 0;
-        this.bucketSec.fill(-1);
+        this.bucketTick.fill(-1);
         this.bucketPkts.fill(0);
         this.bucketBytes.fill(0);
     }
@@ -203,6 +203,9 @@ export class TelemetryCollector {
         recipientId?: string
     ): void {
         this.originatedByKind[kind]++;
+        // Control-plane announce/sync packets are counted in originatedByKind but do not need
+        // per-recipient delivery maps (prevents millions of unused DeliveryRecord allocations at 1000+ nodes).
+        if (kind === 'announce' || kind === 'sync') return;
         if (this.trackedMessages.has(id)) return;
         this.trackedMessages.set(id, {
             id,
@@ -255,10 +258,10 @@ export class TelemetryCollector {
         if (isRelay) {
             this.relayTransmissions++;
         }
-        const sec = Math.floor(simTimeMs * 0.001);
-        const slot = ((sec % 60) + 60) % 60;
-        if (this.bucketSec[slot] !== sec) {
-            this.bucketSec[slot] = sec;
+        const tick = Math.floor(simTimeMs * 0.01); // 100ms buckets
+        const slot = ((tick % 600) + 600) % 600;
+        if (this.bucketTick[slot] !== tick) {
+            this.bucketTick[slot] = tick;
             this.bucketPkts[slot] = 0;
             this.bucketBytes[slot] = 0;
         }
@@ -367,17 +370,17 @@ export class TelemetryCollector {
         let recent10s = 0;
         let recent60s = 0;
         let recentWireBytes1s = 0;
-        const nowSec = Math.floor(simTimeMs * 0.001);
-        for (let i = 0; i < 60; i++) {
-            const bSec = this.bucketSec[i];
-            if (bSec < 0) continue;
-            const age = nowSec - bSec;
-            if (age >= 0 && age < 60) {
+        const nowTick = Math.floor(simTimeMs * 0.01);
+        for (let i = 0; i < 600; i++) {
+            const bTick = this.bucketTick[i];
+            if (bTick < 0) continue;
+            const age = nowTick - bTick;
+            if (age >= 0 && age < 600) {
                 const pkts = this.bucketPkts[i];
                 recent60s += pkts;
-                if (age < 10) {
+                if (age < 100) {
                     recent10s += pkts;
-                    if (age < 1) {
+                    if (age < 10) {
                         recent1s += pkts;
                         recentWireBytes1s += this.bucketBytes[i];
                     }

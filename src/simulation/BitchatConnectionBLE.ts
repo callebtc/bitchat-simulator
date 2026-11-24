@@ -1,5 +1,5 @@
 import { BitchatConnection } from './BitchatConnection';
-import { BitchatPacket, toHex } from '../protocol/BitchatPacket';
+import { BitchatPacket, getPacketCanonicalRoot, toHex } from '../protocol/BitchatPacket';
 import { BinaryProtocol } from '../protocol/BinaryProtocol';
 import { BitchatDevice } from './BitchatDevice';
 import { EnvironmentManager, calculateLineAttenuationStats } from './environment';
@@ -10,11 +10,12 @@ import { RadioMedium } from './RadioMedium';
 const bleWireSizeCache = new WeakMap<BitchatPacket, number>();
 
 function getBleWireBytes(packet: BitchatPacket): number {
-    const cached = bleWireSizeCache.get(packet);
+    const root = getPacketCanonicalRoot(packet);
+    const cached = bleWireSizeCache.get(root);
     if (cached !== undefined) return cached;
     const encoded = BinaryProtocol.encode(packet);
     const bytes = encoded ? encoded.length : packet.payload.length + 22;
-    bleWireSizeCache.set(packet, bytes);
+    bleWireSizeCache.set(root, bytes);
     return bytes;
 }
 
@@ -299,7 +300,7 @@ export class BitchatConnectionBLE extends BitchatConnection {
             this.onPacketSent(head.packet, head.from);
         }
 
-        this.scheduler.scheduleAt(
+        this.scheduler.scheduleAtFast(
             window.endMs + connIntervalWaitMs,
             doneMs => {
                 if (!this.isActive) {
@@ -335,10 +336,9 @@ export class BitchatConnectionBLE extends BitchatConnection {
 
                 if (failed && head.retries < BLE_QUEUE_CONFIG.MAX_CALLBACK_RETRIES) {
                     head.retries++;
-                    this.scheduler?.scheduleAt(
+                    this.scheduler?.scheduleAtFast(
                         doneMs + BLE_QUEUE_CONFIG.SEND_RETRY_DELAY_MS,
-                        retryMs => this.startNextGattOp(queue, retryMs),
-                        `ble-retry:${this.linkID}`
+                        retryMs => this.startNextGattOp(queue, retryMs)
                     );
                     return;
                 }
@@ -370,8 +370,7 @@ export class BitchatConnectionBLE extends BitchatConnection {
                 } else {
                     queue.inFlight = false;
                 }
-            },
-            `ble-tx-done:${this.linkID}`
+            }
         );
     }
 

@@ -39,10 +39,12 @@ export interface BitchatPacket {
     route?: Uint8Array[]; // List of 8-byte intermediate hop peerIDs (v2+)
 }
 
+const HEX_LUT: string[] = Array.from({ length: 256 }, (_, i) => i.toString(16).padStart(2, '0'));
+
 export function toHex(arr: Uint8Array): string {
     let out = '';
     for (let i = 0; i < arr.length; i++) {
-        out += arr[i].toString(16).padStart(2, '0');
+        out += HEX_LUT[arr[i]];
     }
     return out;
 }
@@ -97,9 +99,30 @@ export function createPacket(
  * synchronously in both browser and Node with zero dependencies.
  */
 const packetIdCache = new WeakMap<BitchatPacket, { bytes: Uint8Array; hex: string }>();
+const packetCanonicalRoot = new WeakMap<BitchatPacket, BitchatPacket>();
+
+/**
+ * Returns the canonical root packet for WeakMap caches (packet ID, wire size)
+ * when a packet was cloned across hops with only a changed TTL.
+ */
+export function getPacketCanonicalRoot(packet: BitchatPacket): BitchatPacket {
+    return packetCanonicalRoot.get(packet) ?? packet;
+}
+
+/**
+ * Clone a packet with an updated TTL while preserving its canonical cache root
+ * (TTL is a fixed 1-byte header field excluded from packet ID and wire size).
+ */
+export function clonePacketWithTtl(packet: BitchatPacket, newTtl: number): BitchatPacket {
+    const cloned: BitchatPacket = { ...packet, ttl: newTtl };
+    const root = packetCanonicalRoot.get(packet) ?? packet;
+    packetCanonicalRoot.set(cloned, root);
+    return cloned;
+}
 
 function computePacketIdEntry(packet: BitchatPacket): { bytes: Uint8Array; hex: string } {
-    const cached = packetIdCache.get(packet);
+    const root = packetCanonicalRoot.get(packet) ?? packet;
+    const cached = packetIdCache.get(root);
     if (cached) return cached;
 
     const tsBig = packet.timestamp;
@@ -154,7 +177,7 @@ function computePacketIdEntry(packet: BitchatPacket): { bytes: Uint8Array; hex: 
     }
 
     const entry = { bytes: out, hex: toHex(out) };
-    packetIdCache.set(packet, entry);
+    packetIdCache.set(root, entry);
     return entry;
 }
 
