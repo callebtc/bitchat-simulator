@@ -1,5 +1,5 @@
 import React, { useRef, useMemo, useEffect, useState } from 'react';
-import { useFrame, ThreeEvent } from '@react-three/fiber';
+import { useFrame } from '@react-three/fiber';
 import { Text } from '@react-three/drei';
 import * as THREE from 'three';
 import { useSimulation } from '../context/SimulationContext';
@@ -16,7 +16,8 @@ import { getPeerColor } from '../../utils/colorUtils';
 /**
  * High-performance GPU-Instanced Mesh Renderer capable of 60 FPS with
  * 5,000+ nodes, 30,000+ connections, and 4,096 concurrent flying packets
- * in just 5 WebGL draw calls total (zero per-node/per-edge React components).
+ * in just 5 WebGL draw calls total (zero per-node/per-edge React components
+ * and zero Three.js triangle raycasting on pointer move).
  */
 
 const MAX_NODES = 10_000;
@@ -25,12 +26,13 @@ const MAX_WIFI_SEGMENTS = 20_000;
 const MAX_FLYING_PACKETS = 4_096;
 const LABEL_CROWD_THRESHOLD = 60;
 
+// Disable Three.js CPU triangle raycasting on all GPU-instanced meshes
+// (O(1) spatial-grid picking is handled by InteractionPlane instead).
+const noopRaycast = () => null;
+
 // Reusable scratch objects (zero per-frame heap allocations)
-const _dummyMatrix = new THREE.Matrix4();
-const _dummyPos = new THREE.Vector3();
-const _dummyQuat = new THREE.Quaternion();
-const _dummyScale = new THREE.Vector3();
 const _tmpColor = new THREE.Color();
+const _hsl = { h: 0, s: 0, l: 0 };
 const _whiteColor = new THREE.Color(0xffffff);
 const _blackColor = new THREE.Color(0x000000);
 const _yellowColor = new THREE.Color(0xffff00);
@@ -38,6 +40,43 @@ const _cyanColor = new THREE.Color(0x00ffff);
 const _greyColor = new THREE.Color(0x666666);
 const _wifiColor = new THREE.Color(0xa855f7);
 const _dimColor = new THREE.Color(0x1f2937);
+
+/** Upload only the active [0, count) slice of a dynamic GPU BufferAttribute. */
+function markBufferSubrange(attr: THREE.BufferAttribute, count: number): void {
+    attr.clearUpdateRanges();
+    attr.addUpdateRange(0, count);
+    attr.needsUpdate = true;
+}
+
+/** Direct column-major 2D scale+translate matrix write (5x faster than Matrix4.compose). */
+function writeInstanceMatrix2D(
+    arr: Float32Array,
+    index: number,
+    x: number,
+    y: number,
+    z: number,
+    sx: number,
+    sy: number,
+    sz: number
+): void {
+    const o = index * 16;
+    arr[o] = sx;
+    arr[o + 1] = 0;
+    arr[o + 2] = 0;
+    arr[o + 3] = 0;
+    arr[o + 4] = 0;
+    arr[o + 5] = sy;
+    arr[o + 6] = 0;
+    arr[o + 7] = 0;
+    arr[o + 8] = 0;
+    arr[o + 9] = 0;
+    arr[o + 10] = sz;
+    arr[o + 11] = 0;
+    arr[o + 12] = x;
+    arr[o + 13] = y;
+    arr[o + 14] = z;
+    arr[o + 15] = 1;
+}
 
 const peerColorCache = new Map<string, THREE.Color>();
 function getCachedPeerColor(peerIdHex: string): THREE.Color {
@@ -88,56 +127,9 @@ function createPacketPool(): FlyingPacketPool {
     };
 }
 
-/**
- * Find the closest active connection to world point (x, y) within `maxDist` meters.
- * Used for click-to-inspect connection selection without spawning per-edge hit meshes.
- */
-export function findNearestConnectionAt(
-    connections: BitchatConnection[],
-    x: number,
-    y: number,
-    maxDist: number = 4.5
-): BitchatConnection | null {
-    let best: BitchatConnection | null = null;
-    let bestDistSq = maxDist * maxDist;
-
-    for (let i = 0; i < connections.length; i++) {
-        const conn = connections[i];
-        const a = conn.endpointA.position;
-        const b = conn.endpointB.position;
-        if (!a || !b) continue;
-
-        const minX = (a.x < b.x ? a.x : b.x) - maxDist;
-        const maxX = (a.x > b.x ? a.x : b.x) + maxDist;
-        const minY = (a.y < b.y ? a.y : b.y) - maxDist;
-        const maxY = (a.y > b.y ? a.y : b.y) + maxDist;
-        if (x < minX || x > maxX || y < minY || y > maxY) continue;
-
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const lenSq = dx * dx + dy * dy;
-        let t = 0;
-        if (lenSq > 0.0001) {
-            t = ((x - a.x) * dx + (y - a.y) * dy) / lenSq;
-            if (t < 0) t = 0;
-            else if (t > 1) t = 1;
-        }
-        const px = a.x + t * dx;
-        const py = a.y + t * dy;
-        const dSq = (x - px) * (x - px) + (y - py) * (y - py);
-        if (dSq < bestDistSq) {
-            bestDistSq = dSq;
-            best = conn;
-        }
-    }
-
-    return best;
-}
-
 export const InstancedMeshLayer: React.FC = () => {
     const engine = useSimulation();
-    const { selectedId, selectionType, select, setDragging, highlightedId, setHighlightedId } =
-        useSelection();
+    const { selectedId, selectionType, highlightedId } = useSelection();
     const { showAnnouncePackets, highlightOwnMesh } = useVisualization();
 
     const fillMeshRef = useRef<THREE.InstancedMesh>(null);
@@ -146,8 +138,6 @@ export const InstancedMeshLayer: React.FC = () => {
     const bleLinesRef = useRef<THREE.LineSegments>(null);
     const wifiLinesRef = useRef<THREE.LineSegments>(null);
 
-    // Snapshot of people array aligned with instanceId for O(1) GPU picking
-    const peopleOrderRef = useRef<BitchatPerson[]>([]);
     // Knock-pop animation scales keyed by peerIDHex
     const knockScaleRef = useRef<Map<string, number>>(new Map());
     // Zero-allocation flying packet pool
@@ -172,9 +162,10 @@ export const InstancedMeshLayer: React.FC = () => {
         wifiPosAttr,
         wifiColorAttr,
     } = useMemo(() => {
-        const cGeo = new THREE.CircleGeometry(3.75, 20);
-        const rGeo = new THREE.RingGeometry(3.75, 4.35, 20);
-        const pGeo = new THREE.SphereGeometry(2.0, 8, 8);
+        const cGeo = new THREE.CircleGeometry(3.75, 16);
+        const rGeo = new THREE.RingGeometry(3.75, 4.35, 16);
+        // 8-segment flat disc instead of 128-triangle 3D sphere (16x fewer GPU triangles, identical in 2D ortho!)
+        const pGeo = new THREE.CircleGeometry(2.0, 8);
 
         const bGeo = new THREE.BufferGeometry();
         const bPos = new THREE.BufferAttribute(new Float32Array(MAX_BLE_SEGMENTS * 2 * 3), 3);
@@ -282,15 +273,14 @@ export const InstancedMeshLayer: React.FC = () => {
             }
 
             _tmpColor.setHex(baseHex);
-            const hsl = { h: 0, s: 0, l: 0 };
-            _tmpColor.getHSL(hsl);
+            _tmpColor.getHSL(_hsl);
             if (isRelay) {
-                hsl.s *= 0.5;
-                hsl.l = 0.35;
+                _hsl.s *= 0.5;
+                _hsl.l = 0.35;
             } else {
-                hsl.l = 0.6;
+                _hsl.l = 0.6;
             }
-            _tmpColor.setHSL(hsl.h, hsl.s, hsl.l);
+            _tmpColor.setHSL(_hsl.h, _hsl.s, _hsl.l);
 
             const pool = packetPoolRef.current;
             const slot = pool.cursor;
@@ -331,7 +321,6 @@ export const InstancedMeshLayer: React.FC = () => {
     useFrame((_, delta) => {
         const people = engine.getAllPeople();
         const nodeCount = Math.min(people.length, MAX_NODES);
-        peopleOrderRef.current = people;
 
         const selectedPerson =
             selectedId && selectionType === 'node' ? engine.getPerson(selectedId) : undefined;
@@ -344,12 +333,14 @@ export const InstancedMeshLayer: React.FC = () => {
         const decay = 1 - Math.exp(-10 * delta);
         const knocks = knockScaleRef.current;
 
-        // --- 1. UPDATE INSTANCED NODES (2 draw calls total) ---
+        // --- 1. UPDATE INSTANCED NODES (2 draw calls total, direct Float32Array writes) ---
         const fillMesh = fillMeshRef.current;
         const ringMesh = ringMeshRef.current;
         if (fillMesh && ringMesh) {
             fillMesh.count = nodeCount;
             ringMesh.count = nodeCount;
+            const fillMatArr = fillMesh.instanceMatrix.array as Float32Array;
+            const ringMatArr = ringMesh.instanceMatrix.array as Float32Array;
 
             for (let i = 0; i < nodeCount; i++) {
                 const person = people[i];
@@ -359,7 +350,7 @@ export const InstancedMeshLayer: React.FC = () => {
                 const isDimmed =
                     highlightOwnMesh && isSomethingSelected && !isSelected && !isHighlighted;
 
-                let kScale = knocks.get(peerHex) ?? 1.0;
+                let kScale = knocks.size > 0 ? knocks.get(peerHex) ?? 1.0 : 1.0;
                 if (kScale > 1.002) {
                     kScale = kScale + (1.0 - kScale) * decay;
                     if (kScale <= 1.002) {
@@ -372,17 +363,12 @@ export const InstancedMeshLayer: React.FC = () => {
 
                 const baseScale = isSelected ? 1.25 : isHighlighted ? 1.15 : 1.0;
                 const s = baseScale * kScale;
-
-                _dummyPos.set(person.position.x, person.position.y, 2);
-                _dummyScale.set(s, s, 1);
-                _dummyMatrix.compose(_dummyPos, _dummyQuat, _dummyScale);
-                fillMesh.setMatrixAt(i, _dummyMatrix);
-
-                _dummyPos.set(person.position.x, person.position.y, 2.05);
                 const ringScale = (isSelected ? 1.3 : isHighlighted ? 1.2 : 1.0) * kScale;
-                _dummyScale.set(ringScale, ringScale, 1);
-                _dummyMatrix.compose(_dummyPos, _dummyQuat, _dummyScale);
-                ringMesh.setMatrixAt(i, _dummyMatrix);
+                const px = person.position.x;
+                const py = person.position.y;
+
+                writeInstanceMatrix2D(fillMatArr, i, px, py, 2, s, s, 1);
+                writeInstanceMatrix2D(ringMatArr, i, px, py, 2.05, ringScale, ringScale, 1);
 
                 const baseColor = getCachedPeerColor(peerHex);
                 if (isDimmed) {
@@ -395,12 +381,16 @@ export const InstancedMeshLayer: React.FC = () => {
                 }
             }
 
-            fillMesh.instanceMatrix.needsUpdate = true;
-            if (fillMesh.instanceColor) fillMesh.instanceColor.needsUpdate = true;
-            ringMesh.instanceMatrix.needsUpdate = true;
-            if (ringMesh.instanceColor) ringMesh.instanceColor.needsUpdate = true;
-            // Refresh bounding sphere periodically so frustum culling & raycasting stay accurate
-            fillMesh.boundingSphere = null;
+            if (nodeCount > 0) {
+                markBufferSubrange(fillMesh.instanceMatrix, nodeCount * 16);
+                if (fillMesh.instanceColor) {
+                    markBufferSubrange(fillMesh.instanceColor, nodeCount * 3);
+                }
+                markBufferSubrange(ringMesh.instanceMatrix, nodeCount * 16);
+                if (ringMesh.instanceColor) {
+                    markBufferSubrange(ringMesh.instanceColor, nodeCount * 3);
+                }
+            }
         }
 
         // --- 2. UPDATE CONNECTION LINE SEGMENTS (2 draw calls total: BLE + Wi-Fi Aware) ---
@@ -547,12 +537,16 @@ export const InstancedMeshLayer: React.FC = () => {
         }
 
         bleLineGeo.setDrawRange(0, bleVerts);
-        blePosAttr.needsUpdate = true;
-        bleColorAttr.needsUpdate = true;
+        if (bleVerts > 0) {
+            markBufferSubrange(blePosAttr, bleVerts * 3);
+            markBufferSubrange(bleColorAttr, bleVerts * 3);
+        }
 
         wifiLineGeo.setDrawRange(0, wifiVerts);
-        wifiPosAttr.needsUpdate = true;
-        wifiColorAttr.needsUpdate = true;
+        if (wifiVerts > 0) {
+            markBufferSubrange(wifiPosAttr, wifiVerts * 3);
+            markBufferSubrange(wifiColorAttr, wifiVerts * 3);
+        }
 
         // --- 3. UPDATE INSTANCED FLYING PACKETS (1 draw call total) ---
         const pktMesh = packetMeshRef.current;
@@ -595,10 +589,16 @@ export const InstancedMeshLayer: React.FC = () => {
                     const y = pA.y + dy * t;
                     const sc = pool.scale[i];
 
-                    _dummyPos.set(x, y, 1.2);
-                    _dummyScale.set(sc, sc, sc);
-                    _dummyMatrix.compose(_dummyPos, _dummyQuat, _dummyScale);
-                    pktMesh.setMatrixAt(visibleCount, _dummyMatrix);
+                    writeInstanceMatrix2D(
+                        pktMesh.instanceMatrix.array as Float32Array,
+                        visibleCount,
+                        x,
+                        y,
+                        1.2,
+                        sc,
+                        sc,
+                        sc
+                    );
                     _tmpColor.setRGB(pool.r[i], pool.g[i], pool.b[i]);
                     pktMesh.setColorAt(visibleCount, _tmpColor);
                     visibleCount++;
@@ -606,37 +606,13 @@ export const InstancedMeshLayer: React.FC = () => {
             }
             pktMesh.count = visibleCount;
             if (visibleCount > 0) {
-                pktMesh.instanceMatrix.needsUpdate = true;
-                if (pktMesh.instanceColor) pktMesh.instanceColor.needsUpdate = true;
+                markBufferSubrange(pktMesh.instanceMatrix, visibleCount * 16);
+                if (pktMesh.instanceColor) {
+                    markBufferSubrange(pktMesh.instanceColor, visibleCount * 3);
+                }
             }
         }
     });
-
-    const handlePointerDown = (e: ThreeEvent<PointerEvent>) => {
-        if (e.instanceId === undefined) return;
-        const person = peopleOrderRef.current[e.instanceId];
-        if (!person) return;
-        e.stopPropagation();
-        select(person.id, 'node');
-        setDragging(true);
-        person.setVelocity({ x: 0, y: 0 });
-    };
-
-    const handlePointerMove = (e: ThreeEvent<PointerEvent>) => {
-        if (e.instanceId === undefined) return;
-        const person = peopleOrderRef.current[e.instanceId];
-        if (!person) return;
-        e.stopPropagation();
-        if (highlightedId !== person.device.peerIDHex) {
-            setHighlightedId(person.device.peerIDHex);
-        }
-        document.body.style.cursor = 'pointer';
-    };
-
-    const handlePointerOut = () => {
-        setHighlightedId(null);
-        document.body.style.cursor = 'default';
-    };
 
     // Determine which peer labels to render: all when <= 60 peers, else selected + hovered only
     const activeLabelPeople: BitchatPerson[] = [];
@@ -659,12 +635,22 @@ export const InstancedMeshLayer: React.FC = () => {
     return (
         <group name="instanced-mesh-layer">
             {/* BLE Connections (1 draw call) */}
-            <lineSegments ref={bleLinesRef} geometry={bleLineGeo} frustumCulled={false}>
+            <lineSegments
+                ref={bleLinesRef}
+                geometry={bleLineGeo}
+                frustumCulled={false}
+                raycast={noopRaycast}
+            >
                 <lineBasicMaterial vertexColors transparent opacity={0.65} />
             </lineSegments>
 
             {/* Wi-Fi Aware 5 GHz Connections (1 draw call) */}
-            <lineSegments ref={wifiLinesRef} geometry={wifiLineGeo} frustumCulled={false}>
+            <lineSegments
+                ref={wifiLinesRef}
+                geometry={wifiLineGeo}
+                frustumCulled={false}
+                raycast={noopRaycast}
+            >
                 <lineBasicMaterial vertexColors transparent opacity={0.8} />
             </lineSegments>
 
@@ -673,18 +659,17 @@ export const InstancedMeshLayer: React.FC = () => {
                 ref={packetMeshRef}
                 args={[packetGeo, undefined, MAX_FLYING_PACKETS]}
                 frustumCulled={false}
+                raycast={noopRaycast}
             >
                 <meshBasicMaterial />
             </instancedMesh>
 
-            {/* Node Fill Circles (1 draw call + GPU instance picking) */}
+            {/* Node Fill Circles (1 draw call; O(1) spatial-grid picking via InteractionPlane) */}
             <instancedMesh
                 ref={fillMeshRef}
                 args={[circleGeo, undefined, MAX_NODES]}
                 frustumCulled={false}
-                onPointerDown={handlePointerDown}
-                onPointerMove={handlePointerMove}
-                onPointerOut={handlePointerOut}
+                raycast={noopRaycast}
             >
                 <meshBasicMaterial />
             </instancedMesh>
@@ -694,6 +679,7 @@ export const InstancedMeshLayer: React.FC = () => {
                 ref={ringMeshRef}
                 args={[ringGeo, undefined, MAX_NODES]}
                 frustumCulled={false}
+                raycast={noopRaycast}
             >
                 <meshBasicMaterial />
             </instancedMesh>

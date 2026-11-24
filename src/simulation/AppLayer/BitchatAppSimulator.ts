@@ -20,6 +20,7 @@ import {
     BitchatPacket,
     MessageType,
     SpecialRecipients,
+    clonePacketWithTtl,
     computePacketIdHex,
     createPacket,
     hexToBytes,
@@ -732,11 +733,13 @@ export class BitchatAppSimulator implements DeviceTickable {
         const senderHex = toHex(packet.senderID);
 
         // Any inbound traffic from a peer confirms its active source route (iOS)
-        this.clearRouteConfirmation(senderHex);
+        if (this.pendingRouteConfirmations.size > 0) {
+            this.clearRouteConfirmation(senderHex);
+        }
 
         // Cancel pending jittered relay if a duplicate arrives before our relay timer fires (iOS)
-        const prePacketId = computePacketIdHex(packet);
-        if (this.policy.cancelScheduledRelayOnDuplicate) {
+        if (this.policy.cancelScheduledRelayOnDuplicate && this.scheduledRelays.size > 0) {
+            const prePacketId = computePacketIdHex(packet);
             const pendingHandle = this.scheduledRelays.get(prePacketId);
             if (pendingHandle && this.runtime?.scheduler.cancel(pendingHandle)) {
                 this.scheduledRelays.delete(prePacketId);
@@ -749,7 +752,8 @@ export class BitchatAppSimulator implements DeviceTickable {
             packet,
             nowMs,
             this.policy,
-            peerHex => this.peerManager.getPeer(peerHex)?.signingPublicKey
+            peerHex => this.peerManager.getPeer(peerHex)?.signingPublicKey,
+            senderHex
         );
 
         if (!validation.valid) {
@@ -840,7 +844,7 @@ export class BitchatAppSimulator implements DeviceTickable {
             return;
         }
 
-        const relayPacket: BitchatPacket = { ...packet, ttl: decision.newTtl };
+        const relayPacket = clonePacketWithTtl(packet, decision.newTtl);
 
         const executeRelay = (relayNowMs: number): void => {
             this.scheduledRelays.delete(packetId);
@@ -1202,6 +1206,53 @@ export class BitchatAppSimulator implements DeviceTickable {
         const active = this.device.connectionManager.getActiveConnections();
         if (active.length === 0) return false;
 
+        // Zero-allocation fast path when duplicate collapse & iOS fanout subsetting do not apply
+        const needsCollapse =
+            this.policy.collapseDuplicatePeerLinks && packet.type !== MessageType.ANNOUNCE;
+        const needsSubset =
+            this.policy.useFanoutSubsetting &&
+            packet.type !== MessageType.ANNOUNCE &&
+            packet.type !== MessageType.FRAGMENT &&
+            packet.type !== MessageType.REQUEST_SYNC &&
+            isBroadcastRecipient(packet.recipientID);
+
+        if (!needsCollapse && !needsSubset) {
+            const ingressLinkId = ingressConnection?.linkID;
+            let accepted = false;
+            for (let i = 0; i < active.length; i++) {
+                const conn = active[i];
+                if (!conn.isActive || !conn.isReady) continue;
+                if (ingressLinkId && conn.linkID === ingressLinkId) continue;
+                if (
+                    !ingressConnection &&
+                    ingressDevice &&
+                    conn.getOtherParty(this.device) === ingressDevice
+                ) {
+                    continue;
+                }
+                if (originatorPeerId) {
+                    const boundPeer = this.linkPeerBindings.get(conn.linkID);
+                    if (boundPeer === originatorPeerId) continue;
+                }
+                if (
+                    ingressConnection &&
+                    conn.transportType !== ingressConnection.transportType &&
+                    !this.transportBridge.shouldBridge(
+                        packet,
+                        ingressConnection.transportType,
+                        conn.transportType,
+                        nowMs
+                    )
+                ) {
+                    continue;
+                }
+                if (conn.send(packet, this.device, nowMs)) {
+                    accepted = true;
+                }
+            }
+            return accepted;
+        }
+
         const targets = selectFanoutLinks({
             ownerPeerId: this.device.peerIDHex,
             connections: active,
@@ -1215,7 +1266,8 @@ export class BitchatAppSimulator implements DeviceTickable {
         });
 
         let accepted = false;
-        for (const conn of targets) {
+        for (let i = 0; i < targets.length; i++) {
+            const conn = targets[i];
             // Legacy fallback when ingressConnection wasn't supplied (unit tests)
             if (!ingressConnection && ingressDevice && conn.getOtherParty(this.device) === ingressDevice) {
                 continue;
@@ -1278,11 +1330,9 @@ export class BitchatAppSimulator implements DeviceTickable {
     }
 
     private hasBoundDirectLink(peerIDHex: string): boolean {
-        const activeIds = new Set(
-            this.device.connectionManager.getActiveConnections().map(c => c.linkID)
-        );
-        for (const [linkID, peer] of this.linkPeerBindings) {
-            if (peer === peerIDHex && activeIds.has(linkID)) {
+        const active = this.device.connectionManager.getActiveConnections();
+        for (let i = 0; i < active.length; i++) {
+            if (this.linkPeerBindings.get(active[i].linkID) === peerIDHex) {
                 return true;
             }
         }

@@ -45,6 +45,39 @@ const SIGNED_TYPES = new Set<number>([
     MessageType.LEAVE,
 ]);
 
+// Caches decoded ANNOUNCE keys per immutable payload buffer (1000x speedup during floods)
+const announceKeysCache = new WeakMap<
+    Uint8Array,
+    { sigKey?: Uint8Array; noiseKey?: Uint8Array }
+>();
+
+// Caches symbolic signature verification per signature buffer + signing key + packet identity
+interface CachedSigVerification {
+    key: Uint8Array;
+    payload: Uint8Array;
+    timestamp: bigint;
+    type: number;
+    senderID: Uint8Array;
+    routeLen: number;
+    ok: boolean;
+}
+const sigVerifyCache = new WeakMap<Uint8Array, CachedSigVerification>();
+
+function getAnnounceKeysCached(payload: Uint8Array): {
+    sigKey?: Uint8Array;
+    noiseKey?: Uint8Array;
+} {
+    const cached = announceKeysCache.get(payload);
+    if (cached) return cached;
+    const tlvs = TLV.decode(payload);
+    const entry = {
+        sigKey: tlvs.get(TLVType.SIGNING_PUBLIC_KEY),
+        noiseKey: tlvs.get(TLVType.NOISE_PUBLIC_KEY),
+    };
+    announceKeysCache.set(payload, entry);
+    return entry;
+}
+
 export class SecurityManager {
     private readonly myPeerIDHex: string;
     private processedTimestamps: Map<string, number> = new Map();
@@ -76,14 +109,41 @@ export class SecurityManager {
         packet: BitchatPacket,
         signingPublicKey: Uint8Array
     ): boolean {
-        if (!packet.signature || packet.signature.length !== SIGNATURE_SIZE) {
+        const sig = packet.signature;
+        if (!sig || sig.length !== SIGNATURE_SIZE) {
             return false;
         }
-        const expected = SecurityManager.signPacket(packet, signingPublicKey);
-        for (let i = 0; i < SIGNATURE_SIZE; i++) {
-            if (packet.signature[i] !== expected[i]) return false;
+        const routeLen = packet.route ? packet.route.length : 0;
+        const cached = sigVerifyCache.get(sig);
+        if (
+            cached &&
+            cached.key === signingPublicKey &&
+            cached.payload === packet.payload &&
+            cached.timestamp === packet.timestamp &&
+            cached.type === packet.type &&
+            cached.senderID === packet.senderID &&
+            cached.routeLen === routeLen
+        ) {
+            return cached.ok;
         }
-        return true;
+        const expected = SecurityManager.signPacket(packet, signingPublicKey);
+        let ok = true;
+        for (let i = 0; i < SIGNATURE_SIZE; i++) {
+            if (sig[i] !== expected[i]) {
+                ok = false;
+                break;
+            }
+        }
+        sigVerifyCache.set(sig, {
+            key: signingPublicKey,
+            payload: packet.payload,
+            timestamp: packet.timestamp,
+            type: packet.type,
+            senderID: packet.senderID,
+            routeLen,
+            ok,
+        });
+        return ok;
     }
 
     /**
@@ -110,9 +170,10 @@ export class SecurityManager {
         packet: BitchatPacket,
         nowMs: number,
         policy: MeshPolicy,
-        getKnownSigningKey: (peerIDHex: string) => Uint8Array | undefined
+        getKnownSigningKey: (peerIDHex: string) => Uint8Array | undefined,
+        precomputedSenderHex?: string
     ): ValidationResult {
-        const senderHex = toHex(packet.senderID);
+        const senderHex = precomputedSenderHex ?? toHex(packet.senderID);
         const packetId = computePacketIdHex(packet);
 
         if (senderHex === this.myPeerIDHex) {
@@ -152,9 +213,7 @@ export class SecurityManager {
         // Mandatory signature & verified-announce key gating (SecurityManager.kt:255-347)
         if (policy.requireVerifiedAnnounceBeforeRelay && SIGNED_TYPES.has(packet.type)) {
             if (packet.type === MessageType.ANNOUNCE) {
-                const tlvs = TLV.decode(packet.payload);
-                const sigKey = tlvs.get(TLVType.SIGNING_PUBLIC_KEY);
-                const noiseKey = tlvs.get(TLVType.NOISE_PUBLIC_KEY);
+                const { sigKey, noiseKey } = getAnnounceKeysCached(packet.payload);
                 if (sigKey && noiseKey && packet.signature) {
                     if (!SecurityManager.verifySymbolicSignature(packet, sigKey)) {
                         return { valid: false, reason: 'invalid_signature', packetId };

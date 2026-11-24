@@ -105,7 +105,7 @@ export const Scene: React.FC = () => {
 
     return (
         <div className="w-full h-screen bg-gray-900" onPointerLeave={handleCanvasPointerLeave}>
-            <Canvas>
+            <Canvas dpr={[1, 1.5]} gl={{ powerPreference: 'high-performance', antialias: true }}>
                 <OrthographicCamera makeDefault position={[0, 0, 100]} zoom={2} />
                 <OrbitControls
                     ref={controlsRef}

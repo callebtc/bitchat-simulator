@@ -121,7 +121,7 @@ export class RadioMedium {
         const bucket = buckets[ch];
 
         // Eagerly prune expired entries in this channel bucket when it grows
-        if (bucket.length > 12) {
+        if (bucket.length > 8) {
             const cutoff = params.startMs - 50;
             let write = 0;
             for (let i = 0; i < bucket.length; i++) {
@@ -179,6 +179,10 @@ export class RadioMedium {
         const env = params.environment;
         const hasBuildings = env !== null && env.getBuildingCount() > 0;
 
+        const baseNoiseMw = dbmToMw(baseNoiseDbm);
+        // Once interference alone pushes SINR <= -10 dB, PER is guaranteed 1.0 (skip further raycasts)
+        const saturatedInterferenceMw = dbmToMw(params.rssiDbm + 10);
+
         let interferenceMw = 0;
         let interfererCount = 0;
 
@@ -220,10 +224,14 @@ export class RadioMedium {
 
                 interferenceMw += dbmToMw(rxInterferenceDbm);
                 interfererCount++;
+                if (baseNoiseMw + interferenceMw >= saturatedInterferenceMw) {
+                    bIdx = maxCh + 1; // Early exit outer loop
+                    break;
+                }
             }
         }
 
-        const totalNoiseMw = dbmToMw(baseNoiseDbm) + interferenceMw;
+        const totalNoiseMw = baseNoiseMw + interferenceMw;
         const totalNoiseDbm = mwToDbm(totalNoiseMw);
         const sinrDb = params.rssiDbm - totalNoiseDbm;
         const per = computePacketErrorRate(sinrDb, params.wireBytes, params.band);
