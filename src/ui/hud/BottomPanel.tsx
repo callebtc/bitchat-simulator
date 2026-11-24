@@ -51,13 +51,13 @@ export const BottomPanel: React.FC = () => {
 
     return (
         <div
-            className={`absolute bottom-0 left-0 right-0 border-t border-gray-800 flex flex-col shadow-lg pointer-events-auto transition-all duration-200 ${
+            className={`absolute bottom-0 left-0 right-0 z-20 border-t border-white/10 bg-slate-950/85 backdrop-blur-xl flex flex-col shadow-[0_-8px_30px_rgba(0,0,0,0.35)] pointer-events-auto transition-all duration-200 ${
                 isCollapsed ? 'h-8' : 'h-[272px]'
             }`}
         >
             {/* Header / Tabs */}
             <div
-                className="flex items-center h-8 bg-gray-900 select-none border-b border-gray-800 shrink-0"
+                className="flex items-center h-8 bg-slate-900/60 select-none border-b border-white/5 shrink-0"
                 onClick={e => {
                     if (e.target === e.currentTarget) setIsCollapsed(!isCollapsed);
                 }}

@@ -10,9 +10,13 @@ import { setupDemo } from '../simulation/DemoSetup';
 import { probePeerRoute } from '../simulation/MeshProbe';
 
 import { LayoutProvider } from './context/LayoutContext';
-import { ScaleProvider } from './context/ScaleContext';
-import { ScaleOverlay } from './hud/ScaleIndicator';
 import { VisualizationProvider } from './context/VisualizationContext';
+import { CameraProvider } from './context/CameraContext';
+import { TerrainProvider } from './context/TerrainContext';
+import { PeerLabels } from './overlays/PeerLabels';
+import { ChatBubbles } from './overlays/ChatBubbles';
+import { ViewDock } from './hud/ViewDock';
+import { DevicePhone } from './hud/DevicePhone';
 
 const SimulationController = () => {
     const engine = useSimulation();
@@ -46,7 +50,7 @@ const RecipientPickBanner = () => {
             : null;
 
     return (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-30 pointer-events-auto bg-black/90 border border-cyan-500/70 rounded px-3.5 py-2 shadow-2xl font-mono text-xs text-cyan-100 flex items-center gap-3 backdrop-blur-md">
+        <div className="fixed top-[92px] left-1/2 -translate-x-1/2 z-30 pointer-events-auto bg-black/90 border border-cyan-500/70 rounded px-3.5 py-2 shadow-2xl font-mono text-xs text-cyan-100 flex items-center gap-3 backdrop-blur-md">
             <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
             <span>
                 Click any node on the map to DM from{' '}
@@ -88,12 +92,17 @@ const LayoutContent = () => {
     return (
         <SelectionProvider>
             <SimulationController />
-            <Scene />
-            <RecipientPickBanner />
-            <MainControlPanel />
-            <InspectorPanel />
-            <BottomPanel />
-            <ScaleOverlay />
+            <CameraProvider>
+                <Scene />
+                <PeerLabels />
+                <ChatBubbles />
+                <ViewDock />
+                <RecipientPickBanner />
+                <MainControlPanel />
+                <InspectorPanel />
+                <DevicePhone />
+                <BottomPanel />
+            </CameraProvider>
         </SelectionProvider>
     );
 };
@@ -101,13 +110,13 @@ const LayoutContent = () => {
 function App() {
     return (
         <LayoutProvider>
-            <ScaleProvider>
-                <VisualizationProvider>
-                    <SimulationProvider>
+            <VisualizationProvider>
+                <SimulationProvider>
+                    <TerrainProvider>
                         <LayoutContent />
-                    </SimulationProvider>
-                </VisualizationProvider>
-            </ScaleProvider>
+                    </TerrainProvider>
+                </SimulationProvider>
+            </VisualizationProvider>
         </LayoutProvider>
     );
 }

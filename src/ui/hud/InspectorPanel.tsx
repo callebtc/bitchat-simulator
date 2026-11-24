@@ -7,6 +7,7 @@ import { MovementMode } from '../../simulation/BitchatPerson';
 import { getPeerColor } from '../../utils/colorUtils';
 import { PowerMode } from '../../simulation/BitchatDevice';
 import { useLayout } from '../context/LayoutContext';
+import { useCamera } from '../context/CameraContext';
 import { usePersistedState } from '../../utils/usePersistedState';
 import { BitchatConnectionBLE, RSSI_CONFIG, setRssiNoiseAmplitude } from '../../simulation/BitchatConnectionBLE';
 import { useVisualization } from '../context/VisualizationContext';
@@ -125,8 +126,8 @@ const RssiBar: React.FC<{ rssi: number }> = ({ rssi }) => {
 
 const PanelWrapper: React.FC<{ children: React.ReactNode; title: string; subtitle?: string; onClose: () => void; height: number }> = ({ children, title, subtitle, onClose, height }) => (
     <div 
-        className="absolute top-4 right-4 w-72 bg-black/90 text-white p-0 rounded backdrop-blur-md border border-gray-800 shadow-2xl font-mono text-sm pointer-events-auto flex flex-col transition-all duration-300 animate-in fade-in slide-in-from-right-4"
-        style={{ maxHeight: `calc(100vh - ${height + 32}px)` }}
+        className="absolute top-[84px] right-3 z-20 w-72 bg-slate-950/75 backdrop-blur-xl rounded-2xl text-white p-0 border border-white/10 shadow-2xl font-mono text-sm pointer-events-auto flex flex-col transition-all duration-300 animate-in fade-in slide-in-from-right-4"
+        style={{ maxHeight: `calc(100vh - ${height + 100}px)` }}
     >
         {/* Header */}
         <div className="flex justify-between items-start p-3 pb-2 border-b border-gray-800 bg-gray-900/30">
@@ -165,6 +166,7 @@ export const InspectorPanel: React.FC = () => {
     } = useSelection();
     const { highlightOwnMesh, setHighlightOwnMesh } = useVisualization();
     const { bottomPanelHeight } = useLayout();
+    const { mode: cameraMode, followId, follow, release: releaseCamera } = useCamera();
     const engine = useSimulation();
     const [, forceUpdate] = useState(0);
 
@@ -218,6 +220,33 @@ export const InspectorPanel: React.FC = () => {
                             <option value={MovementMode.BUSY}>BUSY</option>
                         </select>
                     </div>
+                </div>
+
+                {/* Camera: follow this device */}
+                <div className="mb-3 grid grid-cols-3 gap-1">
+                    {(
+                        [
+                            ['follow', 'Follow'],
+                            ['chase', 'Chase'],
+                            ['fpv', 'Eyes'],
+                        ] as const
+                    ).map(([m, label]) => {
+                        const on = cameraMode === m && followId === person.id;
+                        return (
+                            <button
+                                key={m}
+                                onClick={() => (on ? releaseCamera() : follow(person.id, m))}
+                                className={`rounded border px-1.5 py-1 text-[10px] font-bold transition-all ${
+                                    on
+                                        ? 'border-emerald-400/70 bg-emerald-500/20 text-emerald-100'
+                                        : 'border-emerald-900/60 bg-emerald-950/30 text-emerald-300/80 hover:bg-emerald-900/40'
+                                }`}
+                            >
+                                {on ? '■ ' : '◉ '}
+                                {label}
+                            </button>
+                        );
+                    })}
                 </div>
 
                 {/* Quick DM / Probe action */}

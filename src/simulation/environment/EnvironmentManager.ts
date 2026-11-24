@@ -13,9 +13,16 @@ import {
     BoundingBox,
     Material,
     GeoJSONFeatureCollection,
+    GeoJSONFeature,
+    MapContext,
+    MapArea,
+    MapAreaKind,
+    RoadClass,
+    RoadSegment,
     latLonToLocal,
     calculateBounds,
 } from './types';
+import { resolveBuildingHeight } from './BuildingHeights';
 
 import { getFirstIntersection, projectOntoSurface } from './LineOfSight';
 
@@ -37,8 +44,37 @@ function packCell(gx: number, gy: number): number {
     return (gx + GRID_OFFSET) * GRID_STRIDE + (gy + GRID_OFFSET);
 }
 
+/** Features without `properties.kind` predate map context and are buildings. */
+function isBuildingFeature(feature: GeoJSONFeature): boolean {
+    if (feature.geometry.type !== 'Polygon') return false;
+    const kind = feature.properties?.kind;
+    return kind === undefined || kind === 'building';
+}
+
+function roadClassFor(highway: unknown): RoadClass {
+    switch (typeof highway === 'string' ? highway.replace(/_link$/, '') : '') {
+        case 'motorway':
+        case 'trunk':
+        case 'primary':
+        case 'secondary':
+            return 'major';
+        case 'service':
+        case 'track':
+            return 'service';
+        case 'footway':
+        case 'path':
+        case 'cycleway':
+        case 'steps':
+        case 'pedestrian':
+            return 'footway';
+        default:
+            return 'minor';
+    }
+}
+
 export class EnvironmentManager {
     private buildings: Building[] = [];
+    private mapContext: MapContext = { roads: [], areas: [] };
     private buildingById: Map<string, Building> = new Map();
     private bounds: EnvironmentBounds | null = null;
 
@@ -60,9 +96,9 @@ export class EnvironmentManager {
         let minLng = Infinity, maxLng = -Infinity;
 
         for (const feature of geojson.features) {
-            if (feature.geometry.type !== 'Polygon') continue;
+            if (!isBuildingFeature(feature)) continue;
 
-            const coords = feature.geometry.coordinates[0];
+            const coords = (feature.geometry.coordinates as number[][][])[0];
             for (const [lng, lat] of coords) {
                 if (lat < minLat) minLat = lat;
                 if (lat > maxLat) maxLat = lat;
@@ -75,12 +111,16 @@ export class EnvironmentManager {
         const refLon = centerLon ?? (minLng + maxLng) / 2;
 
         this.buildings = [];
+        this.mapContext = { roads: [], areas: [] };
         let buildingId = 0;
 
         for (const feature of geojson.features) {
-            if (feature.geometry.type !== 'Polygon') continue;
+            if (!isBuildingFeature(feature)) {
+                this.ingestContextFeature(feature, refLat, refLon);
+                continue;
+            }
 
-            const coords = feature.geometry.coordinates[0];
+            const coords = (feature.geometry.coordinates as number[][][])[0];
             const vertices: Point2D[] = [];
 
             for (const [lng, lat] of coords) {
@@ -98,12 +138,22 @@ export class EnvironmentManager {
 
             if (vertices.length < 3) continue;
 
+            const id = `building-${buildingId++}`;
+            const osmId = feature.properties?.osmId;
+            const { height, source } = resolveBuildingHeight(
+                feature.properties,
+                vertices,
+                osmId !== undefined ? `osm:${String(osmId)}` : id
+            );
+
             const building: Building = {
-                id: `building-${buildingId++}`,
+                id,
                 material: Material.BUILDING,
                 vertices,
                 bounds: calculateBounds(vertices),
                 properties: feature.properties,
+                height,
+                heightSource: source,
             };
 
             this.buildings.push(building);
@@ -123,6 +173,46 @@ export class EnvironmentManager {
         };
     }
 
+    /** Convert a render-only OSM feature (road / park / water / plaza) to local meters. */
+    private ingestContextFeature(feature: GeoJSONFeature, refLat: number, refLon: number): void {
+        const props = feature.properties ?? {};
+        const toLocal = (ring: number[][]): Point2D[] =>
+            ring.map(([lng, lat]) => latLonToLocal(lat, lng, refLat, refLon));
+
+        if (feature.geometry.type === 'LineString') {
+            const points = toLocal(feature.geometry.coordinates);
+            if (points.length < 2) return;
+            const width = typeof props.width === 'number' && props.width > 0 ? props.width : 6;
+            const road: RoadSegment = {
+                roadClass: roadClassFor(props.highway),
+                width,
+                points,
+                name: typeof props.name === 'string' ? props.name : undefined,
+            };
+            this.mapContext.roads.push(road);
+            return;
+        }
+
+        const kind = props.kind;
+        if (kind !== 'park' && kind !== 'water' && kind !== 'plaza') return;
+        const vertices = toLocal(feature.geometry.coordinates[0] ?? []);
+        if (vertices.length > 1) {
+            const first = vertices[0];
+            const last = vertices[vertices.length - 1];
+            if (Math.abs(first.x - last.x) < 0.01 && Math.abs(first.y - last.y) < 0.01) {
+                vertices.pop();
+            }
+        }
+        if (vertices.length < 3) return;
+        const area: MapArea = { kind: kind as MapAreaKind, vertices };
+        this.mapContext.areas.push(area);
+    }
+
+    /** Render-only roads / parks / water loaded alongside buildings. */
+    getMapContext(): MapContext {
+        return this.mapContext;
+    }
+
     /**
      * Load environment from pre-processed EnvironmentData.
      */
@@ -137,6 +227,7 @@ export class EnvironmentManager {
      */
     clear(): void {
         this.buildings = [];
+        this.mapContext = { roads: [], areas: [] };
         this.buildingById.clear();
         this.grid.clear();
         this.queryStamps = new Uint32Array(0);

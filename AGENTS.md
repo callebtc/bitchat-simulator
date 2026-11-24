@@ -82,14 +82,22 @@ When adding or revising simulated protocol behavior, cite the corresponding upst
     - `types.ts`: GeoJSON types, `ATTENUATION_CONFIG` (`WALL_LOSS = 15 dB`, `BUILDING_DENSE_DB_M = 4.0 dB/m`, `BUILDING_INTERNAL_DB_M = 0.5 dB/m`), local Mercator projections.
     - `EnvironmentManager.ts`: Loads GeoJSON polygons into local meter coordinates, AABB-filtered building queries, point-in-polygon checks, and iterative wall-slide collision (`resolveMovement`).
     - `LineOfSight.ts`: Ray-polygon intersection, wall/interior attenuation breakdown, clearance checks, and outward edge normals.
-    - `OSMFetcher.ts`: Multi-mirror Overpass API fetcher for real-world OSM buildings with `localStorage` caching.
+    - `OSMFetcher.ts`: Multi-mirror Overpass API fetcher (per-mirror timeout + failover) for OSM buildings plus render-only roads / parks / water, tagged via `properties.kind`, with `localStorage` caching.
+    - `BuildingHeights.ts`: Roof heights from OSM `height` / `building:levels` tags with deterministic whole-storey estimates as fallback (`Building.height`, `heightSource`). Heights are currently visual; RF attenuation is still 2D.
+    - `Terrain.ts`: Headless `Heightfield` (bilinear `sample`, `minUnder`), Terrarium DEM decoding and slippy-tile math. Tiles are fetched in `ui/context/TerrainContext.tsx`; elevation is render-only (people, links, buildings and the baked street map drape on it).
     - `PathFinder.ts`: Visibility graph over inflated building polygons (`2.5 m` padding, `150 m` max edge), chunked async construction, A* pathfinding, and `localStorage` caching.
 
 - **`src/events/EventBus.ts`** — Pub/sub bridge (`person_added`, `person_removed`, `connection_formed`, `connection_broken`, `packet_transmitted`, `tick`, `reset`, `environment_loaded`).
-- **`src/ui/`** — React + React Three Fiber visualization and HUD:
-  - `context/`: `SimulationContext`, `SelectionContext`, `LayoutContext`, `ScaleContext`, `VisualizationContext`.
-  - `scene/`: Orthographic 3D canvas (`Scene`, `PersonNode`, `ConnectionEdge`, `BuildingLayer`, `InteractionPlane`, `PathVisualizer`, `RouteVisualizer`).
-  - `hud/`: `MainControlPanel`, `InspectorPanel`, `BottomPanel`, `ChatPanel`, `LogPanel`, `LogView`, `Terminal`, `EnvironmentSection`, `PerformanceStats`, `ScaleIndicator`.
+- **`src/ui/`** — React + React Three Fiber 3D visualization and HUD:
+  - `context/`: `TerrainContext` (DEM heightfield; use `heightAt` / `fieldRef` for any per-frame z), `SimulationContext` (dev builds expose `window.__bitchat.engine`), `SelectionContext` (selection, DM pair, `requestCameraFocus(x, y, distance)`), `CameraContext` (`free` / `follow` / `chase` / `fpv` modes + per-frame `telemetryRef`), `VisualizationContext` (time of day, building style, graphics quality, layer toggles), `LayoutContext`.
+  - `scene/` — perspective 3D world. **Coordinate rule:** everything simulation-derived renders inside the `sim-root` group rotated by `SIM_ROOT_ROTATION` (`coords.ts`), so layers author geometry in simulation meters (x east, y north, z up) while sky / lights / camera stay Y-up. Use `simToWorld()` when converting outside that group.
+    - `world/`: `Atmosphere` (solar model in `sun.ts`, camera-following shadow frustum, stars), `SkyDome` (analytic sky + PMREM image-based lighting baked from it), `Ground`, `TerrainSurface` (DEM-displaced mesh textured by `mapTexture.ts`, which bakes roads, curbs, lane markings, parks, plazas and water), `CityLayer` (`cityGeometry.ts` merges extruded OSM footprints into one draw call with plinths sunk into slopes; `buildingMaterial.ts` adds procedural windows lit at night), `StreetLamps`.
+    - `actors/`: `PeopleLayer` (instanced walking figures with gait locked to ground speed, phones, halos, LOD + frustum culling, screen-space markers in `markerMaterial.ts` with an occluded "ghost" pass), `SelectionBeacons`.
+    - `network/`: `NetworkLayer` (BLE / Wi-Fi Aware link arcs from `linkArc.ts`, packets in flight, radio ripples sized to the nominal BLE range).
+    - `camera/CameraRig.tsx` (OrbitControls with zoom-to-cursor, WASD/QE/RF, fly-to, follow/chase/first-person), `interaction/PointerController.tsx` (screen-space picking, 2-click DM targeting, drag-to-carry, right-click walk target), `effects/PostProcessing.tsx` (MSAA HDR → NaN sanitize → bloom → output).
+    - `PathVisualizer`, `RouteVisualizer`, `ProbeVisualizer`: route/probe overlays (sim-root space).
+  - `overlays/`: DOM overlays pinned to 3D points via `ScreenAnchors` (`PeerLabels`, `ChatBubbles`); one projector writes transforms per frame.
+  - `hud/`: `ViewDock` (compass/scale, camera modes, time of day, building style, quality), `MainControlPanel`, `EnvironmentSection` (place search, presets, radius, OSM stats), `InspectorPanel`, `DevicePhone` (followed device's live BitChat app), `BottomPanel`, `ChatPanel`, `LogPanel`, `LogView`, `Terminal`, `PerformanceStats`.
 - **`src/utils/`** — `colorUtils.ts`, `usePersistedState.ts`.
 
 ## 5. Current Implementation vs. Real BitChat (Known Gaps & Roadmap)

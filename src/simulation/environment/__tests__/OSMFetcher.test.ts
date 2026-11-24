@@ -97,4 +97,29 @@ describe('OSMFetcher', () => {
          await expect(fetchBuildingsFromOSM(0, 0, 0.01, 0.01, { useCache: false }))
              .rejects.toThrow();
     });
+
+    it('hedges to the next mirror when the first one hangs', async () => {
+        // First mirror never answers (until aborted); second responds
+        fetchMock.mockImplementationOnce(
+            (_url: string, init: { signal: AbortSignal }) =>
+                new Promise((_resolve, reject) => {
+                    init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+                })
+        );
+        fetchMock.mockImplementationOnce(() =>
+            Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ elements: [] }) })
+        );
+
+        const result = await fetchBuildingsFromOSM(0, 0, 0.01, 0.01, {
+            useCache: false,
+            hedgeDelayMs: 10,
+            timeoutMs: 5000,
+        });
+
+        expect(result.features).toEqual([]);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        // The hung request is aborted once the hedge wins
+        const firstSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+        expect(firstSignal.aborted).toBe(true);
+    });
 });

@@ -169,9 +169,8 @@ export const ChatPanel: React.FC = () => {
         const midY = (person.position.y + recipientPerson.position.y) * 0.5;
         const dx = Math.abs(person.position.x - recipientPerson.position.x);
         const dy = Math.abs(person.position.y - recipientPerson.position.y);
-        const span = Math.max(dx, dy, 80);
-        const targetZoom = Math.max(0.45, Math.min(3.5, 420 / span));
-        requestCameraFocus(midX, midY, targetZoom);
+        const span = Math.max(dx, dy, 40);
+        requestCameraFocus(midX, midY, Math.min(2500, span * 1.4 + 30));
     };
 
     const getDmDeliveryBadge = (msg: ChatMessage): React.ReactNode => {

@@ -20,13 +20,19 @@ export interface GeoJSONPolygon {
     coordinates: number[][][];
 }
 
-export interface GeoJSONFeature<G = GeoJSONPolygon, P = Record<string, unknown>> {
+export interface GeoJSONLineString {
+    type: 'LineString';
+    /** Array of [lng, lat] */
+    coordinates: number[][];
+}
+
+export interface GeoJSONFeature<G = GeoJSONPolygon | GeoJSONLineString, P = Record<string, unknown>> {
     type: 'Feature';
     geometry: G;
     properties: P;
 }
 
-export interface GeoJSONFeatureCollection<G = GeoJSONPolygon, P = Record<string, unknown>> {
+export interface GeoJSONFeatureCollection<G = GeoJSONPolygon | GeoJSONLineString, P = Record<string, unknown>> {
     type: 'FeatureCollection';
     features: GeoJSONFeature<G, P>[];
 }
@@ -84,6 +90,44 @@ export interface Building {
     bounds: BoundingBox;
     /** Original OSM properties if available */
     properties?: Record<string, unknown>;
+    /** Roof height above ground in meters (see `BuildingHeights.ts`). */
+    height?: number;
+    /** Where `height` came from: explicit OSM tag, floor count, or deterministic estimate. */
+    heightSource?: BuildingHeightSource;
+}
+
+export type BuildingHeightSource = 'tag' | 'levels' | 'estimate';
+
+// ============================================================================
+// Map Context (render-only OSM features: roads, parks, water)
+// ============================================================================
+
+/** Coarse road classes derived from OSM `highway=*` tags. */
+export type RoadClass = 'major' | 'minor' | 'service' | 'footway';
+
+export interface RoadSegment {
+    roadClass: RoadClass;
+    /** Carriageway width in meters (from `width` / `lanes` tags or class default). */
+    width: number;
+    /** Polyline vertices in local meters. */
+    points: Point2D[];
+    name?: string;
+}
+
+export type MapAreaKind = 'park' | 'water' | 'plaza';
+
+export interface MapArea {
+    kind: MapAreaKind;
+    vertices: Point2D[];
+}
+
+/**
+ * Non-physical map context (roads, green space, water). Used for rendering and
+ * future pedestrian routing; it does NOT affect RF attenuation or collisions.
+ */
+export interface MapContext {
+    roads: RoadSegment[];
+    areas: MapArea[];
 }
 
 // ============================================================================

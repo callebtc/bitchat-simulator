@@ -11,6 +11,13 @@
 export { Material, MATERIAL_ATTENUATION, latLonToLocal, localToLatLon, calculateBounds } from './types';
 export type {
     Point2D,
+    BuildingHeightSource,
+    RoadClass,
+    RoadSegment,
+    MapArea,
+    MapAreaKind,
+    MapContext,
+    GeoJSONLineString,
     BoundingBox,
     Building,
     EnvironmentBounds,
@@ -20,6 +27,9 @@ export type {
     GeoJSONFeature,
     GeoJSONFeatureCollection,
 } from './types';
+
+// Building heights (OSM Simple 3D Buildings)
+export { resolveBuildingHeight, parseOsmLength, polygonArea, STOREY_HEIGHT_M } from './BuildingHeights';
 
 // Environment Manager
 export { EnvironmentManager } from './EnvironmentManager';
@@ -31,7 +41,10 @@ export {
     fetchBuildingsAround,
     clearOSMCache,
     getOSMCacheStats,
+    parseOverpassResponse,
+    classifyOsmWay,
 } from './OSMFetcher';
+export type { OSMFeatureKind } from './OSMFetcher';
 
 // Line of Sight
 export {

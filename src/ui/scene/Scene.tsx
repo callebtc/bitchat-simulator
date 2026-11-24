@@ -1,172 +1,103 @@
-import React, { useCallback, useRef, useEffect } from 'react';
-import { Canvas, useThree, useFrame } from '@react-three/fiber';
-import { OrbitControls, OrthographicCamera } from '@react-three/drei';
-import { useSelection } from '../context/SelectionContext';
-import { InstancedMeshLayer } from './InstancedMeshLayer';
-import { BuildingLayer } from './BuildingLayer';
+import React, { useMemo } from 'react';
+import { Canvas } from '@react-three/fiber';
+import * as THREE from 'three';
+
+import { useVisualization } from '../context/VisualizationContext';
+import { SIM_ROOT_ROTATION } from './coords';
+import { CameraRig } from './camera/CameraRig';
+import { PointerController } from './interaction/PointerController';
+import { Atmosphere } from './world/Atmosphere';
+import { Ground } from './world/Ground';
+import { CityLayer } from './world/CityLayer';
+import { TerrainSurface } from './world/TerrainSurface';
+import { useTerrain } from '../context/TerrainContext';
+import { useEnvironmentSnapshot } from './world/useEnvironmentSnapshot';
+import { computeSunState } from './world/sun';
+import { PeopleLayer } from './actors/PeopleLayer';
+import { SelectionBeacons } from './actors/SelectionBeacons';
+import { NetworkLayer } from './network/NetworkLayer';
+import { PostProcessing } from './effects/PostProcessing';
 import { PathVisualizer } from './PathVisualizer';
 import { RouteVisualizer } from './RouteVisualizer';
 import { ProbeVisualizer } from './ProbeVisualizer';
-import { InteractionPlane } from './InteractionPlane';
-import { ScaleUpdater } from '../hud/ScaleIndicator';
-import * as THREE from 'three';
+import { ScreenAnchorProjector } from '../overlays/ScreenAnchors';
 
-const ViewTracker: React.FC = () => {
-    const { camera } = useThree();
-    const { viewCenterRef } = useSelection();
+/**
+ * Root 3D view.
+ *
+ * World (Y-up): sky, lights, ground, camera.
+ * SimRoot (rotated so authored geometry uses simulation meters, z-up):
+ * city, map context, people, radio network, route / probe overlays.
+ */
+const SimWorld: React.FC = () => {
+    const { timeOfDay, buildingStyle, graphicsQuality } = useVisualization();
+    const env = useEnvironmentSnapshot();
+    const { field } = useTerrain();
+    const night = useMemo(() => computeSunState(timeOfDay).night, [timeOfDay]);
+    const shadowMapSize = graphicsQuality === 'high' ? 4096 : graphicsQuality === 'balanced' ? 2048 : null;
+    const shadows = shadowMapSize !== null;
+    const hasCity = env.buildings.length > 0;
 
-    // Writes to a mutable ref — zero React re-renders per frame!
-    useFrame(() => {
-        viewCenterRef.current.x = camera.position.x;
-        viewCenterRef.current.y = camera.position.y;
-    });
+    return (
+        <>
+            <Atmosphere hour={timeOfDay} shadowMapSize={shadowMapSize} />
+            <Ground night={night} hasCity={hasCity} baseHeight={field ? field.minHeight - 0.4 : 0} />
+            <CameraRig />
+            <PointerController />
+            <ScreenAnchorProjector />
 
-    return null;
-};
+            <group name="sim-root" rotation={SIM_ROOT_ROTATION}>
+                {field && hasCity && (
+                    <TerrainSurface
+                        field={field}
+                        mapContext={env.mapContext}
+                        buildings={env.buildings}
+                        night={night}
+                        shadows={shadows}
+                    />
+                )}
+                <CityLayer
+                    buildings={env.buildings}
+                    terrain={field}
+                    style={buildingStyle}
+                    night={night}
+                    shadows={shadows}
+                />
+                <PeopleLayer />
+                <SelectionBeacons />
+                <NetworkLayer />
+                <ProbeVisualizer />
+                <PathVisualizer />
+                <RouteVisualizer />
+            </group>
 
-const CameraFocuser: React.FC<{ controlsRef: React.RefObject<any> }> = ({ controlsRef }) => {
-    const { camera } = useThree();
-    const { focusRequest } = useSelection();
-    const lastNonceRef = useRef<number>(0);
-
-    useEffect(() => {
-        if (!focusRequest || focusRequest.nonce === lastNonceRef.current) return;
-        lastNonceRef.current = focusRequest.nonce;
-
-        const ortho = camera as THREE.OrthographicCamera;
-        ortho.position.x = focusRequest.x;
-        ortho.position.y = focusRequest.y;
-        if (focusRequest.zoom !== undefined && Number.isFinite(focusRequest.zoom)) {
-            ortho.zoom = Math.max(0.25, Math.min(8, focusRequest.zoom));
-            ortho.updateProjectionMatrix();
-        }
-        if (controlsRef.current) {
-            controlsRef.current.target.x = focusRequest.x;
-            controlsRef.current.target.y = focusRequest.y;
-            controlsRef.current.update();
-        }
-    }, [camera, controlsRef, focusRequest]);
-
-    return null;
-};
-
-interface KeyboardNavigatorProps {
-    controlsRef: React.RefObject<any>;
-}
-
-const KeyboardNavigator: React.FC<KeyboardNavigatorProps> = ({ controlsRef }) => {
-    const { camera } = useThree();
-    const keysPressed = useRef<Set<string>>(new Set());
-    const BASE_SPEED = 200;
-
-    useEffect(() => {
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
-                return;
-            }
-            const key = e.key.toLowerCase();
-            if (['w', 'a', 's', 'd'].includes(key)) {
-                keysPressed.current.add(key);
-            }
-        };
-
-        const handleKeyUp = (e: KeyboardEvent) => {
-            keysPressed.current.delete(e.key.toLowerCase());
-        };
-
-        const handleBlur = () => {
-            keysPressed.current.clear();
-        };
-
-        window.addEventListener('keydown', handleKeyDown);
-        window.addEventListener('keyup', handleKeyUp);
-        window.addEventListener('blur', handleBlur);
-
-        return () => {
-            window.removeEventListener('keydown', handleKeyDown);
-            window.removeEventListener('keyup', handleKeyUp);
-            window.removeEventListener('blur', handleBlur);
-        };
-    }, []);
-
-    useFrame((_, delta) => {
-        if (keysPressed.current.size === 0) return;
-
-        const orthoCamera = camera as THREE.OrthographicCamera;
-        const speed = (BASE_SPEED / orthoCamera.zoom) * delta;
-
-        let dx = 0;
-        let dy = 0;
-
-        if (keysPressed.current.has('w')) dy += speed;
-        if (keysPressed.current.has('s')) dy -= speed;
-        if (keysPressed.current.has('a')) dx -= speed;
-        if (keysPressed.current.has('d')) dx += speed;
-
-        if (dx !== 0 && dy !== 0) {
-            const factor = 1 / Math.sqrt(2);
-            dx *= factor;
-            dy *= factor;
-        }
-
-        camera.position.x += dx;
-        camera.position.y += dy;
-
-        if (controlsRef.current) {
-            controlsRef.current.target.x += dx;
-            controlsRef.current.target.y += dy;
-        }
-    });
-
-    return null;
+            {graphicsQuality !== 'fast' && (
+                <PostProcessing bloomStrength={0.45 + 0.2 * night} bloomThreshold={2.4 - 1.3 * night} />
+            )}
+        </>
+    );
 };
 
 export const Scene: React.FC = () => {
-    const { isDragging, setHighlightedId } = useSelection();
-    const controlsRef = useRef<any>(null);
-
-    const handleCanvasPointerLeave = useCallback(() => {
-        setHighlightedId(null);
-        document.body.style.cursor = 'default';
-    }, [setHighlightedId]);
-
+    const { graphicsQuality } = useVisualization();
     return (
-        <div className="w-full h-screen bg-gray-900" onPointerLeave={handleCanvasPointerLeave}>
-            <Canvas dpr={[1, 1.5]} gl={{ powerPreference: 'high-performance', antialias: true }}>
-                <OrthographicCamera makeDefault position={[0, 0, 100]} zoom={2} />
-                <OrbitControls
-                    ref={controlsRef}
-                    enableRotate={false}
-                    enabled={!isDragging}
-                    mouseButtons={{
-                        LEFT: THREE.MOUSE.PAN,
-                        MIDDLE: THREE.MOUSE.DOLLY,
-                        RIGHT: THREE.MOUSE.PAN,
-                    }}
-                />
-                <ViewTracker />
-                <CameraFocuser controlsRef={controlsRef} />
-                <KeyboardNavigator controlsRef={controlsRef} />
-                <ScaleUpdater />
-
-                <ambientLight intensity={0.5} />
-
-                <InteractionPlane />
-
-                {/* Merged 2-draw-call building layer */}
-                <BuildingLayer />
-
-                {/* GPU-instanced nodes, connections, and flying packets (5 draw calls total) */}
-                <InstancedMeshLayer />
-
-                {/* Live DM Route Probe & Packet Hop Follower */}
-                <ProbeVisualizer />
-
-                {/* Path visualization for hover/animation */}
-                <PathVisualizer />
-
-                {/* Route visualization for source-routed packet flashes */}
-                <RouteVisualizer />
+        <div className="fixed inset-0 bg-[#05070b]">
+            <Canvas
+                shadows={graphicsQuality !== 'fast' ? { type: THREE.PCFSoftShadowMap } : false}
+                // Pixel ratio is the dominant GPU cost with HDR MSAA + bloom on retina displays
+                dpr={graphicsQuality === 'high' ? [1, 1.5] : graphicsQuality === 'balanced' ? [1, 1.25] : [1, 1]}
+                camera={{ fov: 45, near: 0.5, far: 20000, position: [170, 210, 250] }}
+                gl={{
+                    powerPreference: 'high-performance',
+                    antialias: graphicsQuality === 'fast',
+                    stencil: false,
+                }}
+                onCreated={({ gl }) => {
+                    gl.toneMapping = THREE.ACESFilmicToneMapping;
+                    gl.outputColorSpace = THREE.SRGBColorSpace;
+                }}
+            >
+                <SimWorld />
             </Canvas>
         </div>
     );

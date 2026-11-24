@@ -61,6 +61,22 @@ const TinyGraph: React.FC<{ data: HistoryPoint[], color: string, label: string, 
     );
 };
 
+const VizToggle: React.FC<{ label: string; on: boolean; onToggle: () => void }> = ({ label, on, onToggle }) => (
+    <div className="flex items-center justify-between rounded border border-gray-800 bg-gray-900/30 px-2 py-1.5">
+        <span className="select-none text-[10px] uppercase tracking-wider text-gray-400">{label}</span>
+        <button
+            onClick={onToggle}
+            className={`relative h-4 w-8 rounded-full transition-colors ${on ? 'bg-cyan-600' : 'bg-gray-700'}`}
+        >
+            <div
+                className={`absolute top-0.5 h-3 w-3 rounded-full bg-white transition-transform ${
+                    on ? 'translate-x-4' : 'translate-x-0.5'
+                }`}
+            />
+        </button>
+    </div>
+);
+
 const CollapsibleSection: React.FC<{
     title: string;
     isExpanded: boolean;
@@ -98,7 +114,18 @@ export const MainControlPanel: React.FC = () => {
     const engine = useSimulation();
     const { viewCenterRef } = useSelection();
     const { bottomPanelHeight } = useLayout();
-    const { showAnnouncePackets, setShowAnnouncePackets } = useVisualization();
+    const {
+        showAnnouncePackets,
+        setShowAnnouncePackets,
+        showLinks,
+        setShowLinks,
+        showRadioPulses,
+        setShowRadioPulses,
+        showLabels,
+        setShowLabels,
+        showChatBubbles,
+        setShowChatBubbles,
+    } = useVisualization();
     
     const [isCollapsed, setIsCollapsed] = usePersistedState('main_panel_collapsed', false);
     
@@ -298,7 +325,7 @@ export const MainControlPanel: React.FC = () => {
 
     return (
         <div 
-            className="absolute top-4 left-4 w-72 bg-black/90 text-white p-3 rounded backdrop-blur-md border border-gray-800 shadow-2xl font-mono select-none pointer-events-auto transition-all duration-300 flex flex-col"
+            className="absolute top-3 left-3 z-20 w-72 bg-slate-950/75 text-white p-3 rounded-2xl backdrop-blur-xl border border-white/10 shadow-[0_8px_40px_rgba(0,0,0,0.45)] font-mono select-none pointer-events-auto transition-all duration-300 flex flex-col"
             style={{ maxHeight: `calc(100vh - ${bottomPanelHeight + 32}px)` }}
         >
             {/* Header */}
@@ -508,22 +535,21 @@ export const MainControlPanel: React.FC = () => {
                         </svg>
                     }
                 >
-                     <div className="flex items-center justify-between bg-gray-900/30 px-2 py-1.5 rounded border border-gray-800">
-                        <label className="text-[10px] text-gray-400 flex items-center gap-1.5 cursor-pointer select-none">
-                            <span className="uppercase tracking-wider">Announce Pkts</span>
-                        </label>
-                        <button
-                            onClick={() => setShowAnnouncePackets(!showAnnouncePackets)}
-                            className={`relative w-8 h-4 rounded-full transition-colors ${
-                                showAnnouncePackets ? 'bg-cyan-600' : 'bg-gray-700'
-                            }`}
-                        >
-                            <div
-                                className={`absolute top-0.5 w-3 h-3 rounded-full bg-white transition-transform ${
-                                    showAnnouncePackets ? 'translate-x-4' : 'translate-x-0.5'
-                                }`}
+                    <div className="space-y-1">
+                        {[
+                            ['Announce Pkts', showAnnouncePackets, setShowAnnouncePackets],
+                            ['Radio Links', showLinks, setShowLinks],
+                            ['Radio Pulses', showRadioPulses, setShowRadioPulses],
+                            ['Name Tags', showLabels, setShowLabels],
+                            ['Chat Bubbles', showChatBubbles, setShowChatBubbles],
+                        ].map(([label, on, set]) => (
+                            <VizToggle
+                                key={label as string}
+                                label={label as string}
+                                on={on as boolean}
+                                onToggle={() => (set as (v: boolean) => void)(!(on as boolean))}
                             />
-                        </button>
+                        ))}
                     </div>
                 </CollapsibleSection>
                 

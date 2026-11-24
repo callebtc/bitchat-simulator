@@ -16,3 +16,69 @@
     width: 0;
     height: 0;
 }
+
+body {
+    background: #05070b;
+    overflow: hidden;
+    font-feature-settings: 'tnum' 1;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* Time-of-day slider: night → dawn → day → dusk → night gradient track */
+.time-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 6px;
+    border-radius: 999px;
+    background: linear-gradient(
+        90deg,
+        #0b1026 0%,
+        #1b2350 20%,
+        #f59e7a 27%,
+        #7cc4f5 38%,
+        #9fd6ff 50%,
+        #7cc4f5 62%,
+        #f59e5b 73%,
+        #3b2a5a 80%,
+        #0b1026 100%
+    );
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    cursor: pointer;
+}
+.time-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 999px;
+    background: #fef3c7;
+    box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.9), 0 0 12px rgba(253, 224, 71, 0.8);
+}
+.time-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border: none;
+    border-radius: 999px;
+    background: #fef3c7;
+    box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.9), 0 0 12px rgba(253, 224, 71, 0.8);
+}
+
+@keyframes bubble-pop {
+    0% {
+        opacity: 0;
+        transform: translateY(6px) scale(0.85);
+    }
+    12% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+    85% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 0;
+        transform: translateY(-6px);
+    }
+}
+.bubble-pop {
+    animation: bubble-pop 5.2s ease-out forwards;
+}
