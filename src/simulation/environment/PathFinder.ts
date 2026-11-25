@@ -1,26 +1,65 @@
 /**
  * PathFinder
  * High-performance visibility graph pathfinding around building obstacles.
- * Uses 2D spatial grids for buildings, inflated polygons, and graph nodes,
- * plus a binary-heap typed-array A* solver so thousands of BUSY agents can
- * continuously navigate dense cities like Times Square with negligible CPU.
+ * Uses 2D spatial grids for buildings, clearance polygons, and graph nodes,
+ * normalizes CW/CCW OpenStreetMap polygon winding, generates nodes only at
+ * convex outer corners, connects start/goal via real-building line-of-sight
+ * (so agents near walls never get stranded), and smooths paths via string-pulling.
  */
 
 import { Building, BoundingBox, Point2D, calculateBounds } from './types';
 import { hasLineOfSight, hasClearance, isPointStrictlyInside } from './LineOfSight';
 
-const DEFAULT_PADDING = 3;
+const DEFAULT_PADDING = 1.5;
 const MAX_VISIBILITY_DISTANCE = 150;
+const FALLBACK_ENDPOINT_RADIUS = 350;
 const CHUNK_SIZE = 2000;
-const GRAPH_CACHE_PREFIX = 'bitchat_visgraph_';
+// v2 invalidates older caches built before CW/CCW winding normalization
+const GRAPH_CACHE_PREFIX = 'bitchat_visgraph_v2_';
 const POLY_CELL_SIZE = 25;
 const NODE_CELL_SIZE = 50;
 const GRID_OFFSET = 32768;
 const GRID_STRIDE = 65536;
-const MAX_ENDPOINT_CONNECTORS = 20;
+const MAX_ENDPOINT_CONNECTORS = 32;
 
 function packCell(gx: number, gy: number): number {
     return (gx + GRID_OFFSET) * GRID_STRIDE + (gy + GRID_OFFSET);
+}
+
+/** Signed polygon area (> 0 means CCW in Y-up coordinates, < 0 means CW). */
+function signedPolygonArea(vertices: Point2D[]): number {
+    let area2 = 0;
+    const n = vertices.length;
+    for (let i = 0; i < n; i++) {
+        const a = vertices[i];
+        const b = vertices[(i + 1) % n];
+        area2 += a.x * b.y - b.x * a.y;
+    }
+    return area2 * 0.5;
+}
+
+/** Normalize polygon winding to CCW and remove consecutive duplicate vertices. */
+function normalizeCCW(vertices: Point2D[]): Point2D[] {
+    const cleaned: Point2D[] = [];
+    for (let i = 0; i < vertices.length; i++) {
+        const curr = vertices[i];
+        const prev = cleaned.length > 0 ? cleaned[cleaned.length - 1] : null;
+        if (!prev || Math.abs(curr.x - prev.x) > 1e-4 || Math.abs(curr.y - prev.y) > 1e-4) {
+            cleaned.push(curr);
+        }
+    }
+    if (cleaned.length > 1) {
+        const first = cleaned[0];
+        const last = cleaned[cleaned.length - 1];
+        if (Math.abs(first.x - last.x) <= 1e-4 && Math.abs(first.y - last.y) <= 1e-4) {
+            cleaned.pop();
+        }
+    }
+    if (cleaned.length < 3) return [];
+    if (signedPolygonArea(cleaned) < 0) {
+        cleaned.reverse();
+    }
+    return cleaned;
 }
 
 export interface PathResult {
@@ -286,6 +325,52 @@ export class PathFinder {
         return results.map(r => r.idx);
     }
 
+    private prepareNodesAndPolygons(): void {
+        this.nodes = [];
+        this.inflatedPolygons = [];
+
+        // Keep clearance polygon tighter than corner node offset so narrow 3-4 m alleys remain passable
+        const clearancePadding = Math.min(this.padding * 0.45, 0.7);
+        for (const building of this.buildings) {
+            const inflated = this.getInflatedPolygon(building.vertices, clearancePadding);
+            if (inflated.length >= 3) {
+                this.inflatedPolygons.push(inflated);
+            }
+        }
+        this.rebuildPolygonIndices();
+
+        // Only place graph waypoints at convex outer corners (normalized CCW)
+        const cornerPoints: Point2D[] = [];
+        for (const building of this.buildings) {
+            const corners = this.getConvexCornerNodes(building.vertices, this.padding);
+            for (let i = 0; i < corners.length; i++) {
+                const p = corners[i];
+                if (this.isInsideAnyBuilding(p)) continue;
+
+                const nearbyInf = this.getNearbyInflated(p, p);
+                let blocked = false;
+                for (let j = 0; j < nearbyInf.length; j++) {
+                    if (isPointStrictlyInside(p, nearbyInf[j])) {
+                        blocked = true;
+                        break;
+                    }
+                }
+                if (!blocked) {
+                    cornerPoints.push(p);
+                }
+            }
+        }
+
+        for (let i = 0; i < cornerPoints.length; i++) {
+            this.nodes.push({
+                point: cornerPoints[i],
+                neighbors: [],
+                distances: [],
+            });
+        }
+        this.rebuildNodeIndex();
+    }
+
     private async doBuildGraphAsync(): Promise<void> {
         this.nodes = [];
         this.inflatedPolygons = [];
@@ -300,38 +385,7 @@ export class PathFinder {
         this.onProgress?.(0, 'Preparing buildings...');
         await this.yieldToUI();
 
-        for (const building of this.buildings) {
-            const inflated = this.getInflatedPolygon(building.vertices, this.padding);
-            if (inflated.length >= 3) {
-                this.inflatedPolygons.push(inflated);
-            }
-        }
-        this.rebuildPolygonIndices();
-
-        let cornerPoints: Point2D[] = [];
-        for (const building of this.buildings) {
-            const padded = this.getPaddedVertices(building.vertices);
-            cornerPoints.push(...padded);
-        }
-
-        cornerPoints = cornerPoints.filter(p => {
-            const nearby = this.getNearbyInflated(p, p);
-            for (let i = 0; i < nearby.length; i++) {
-                if (isPointStrictlyInside(p, nearby[i])) {
-                    return false;
-                }
-            }
-            return true;
-        });
-
-        for (const point of cornerPoints) {
-            this.nodes.push({
-                point,
-                neighbors: [],
-                distances: [],
-            });
-        }
-        this.rebuildNodeIndex();
+        this.prepareNodesAndPolygons();
 
         this.onProgress?.(0.1, `Building visibility graph (${this.nodes.length} nodes)...`);
         await this.yieldToUI();
@@ -382,40 +436,15 @@ export class PathFinder {
     private ensureGraphBuilt(): void {
         if (this.graphBuilt && !this.needsRebuild) return;
 
-        this.nodes = [];
-        this.inflatedPolygons = [];
-
         if (this.buildings.length === 0) {
+            this.nodes = [];
+            this.inflatedPolygons = [];
             this.graphBuilt = true;
             this.needsRebuild = false;
             return;
         }
 
-        for (const building of this.buildings) {
-            const inflated = this.getInflatedPolygon(building.vertices, this.padding);
-            if (inflated.length >= 3) {
-                this.inflatedPolygons.push(inflated);
-            }
-        }
-        this.rebuildPolygonIndices();
-
-        let cornerPoints: Point2D[] = [];
-        for (const building of this.buildings) {
-            cornerPoints.push(...this.getPaddedVertices(building.vertices));
-        }
-
-        cornerPoints = cornerPoints.filter(p => {
-            const nearby = this.getNearbyInflated(p, p);
-            for (let i = 0; i < nearby.length; i++) {
-                if (isPointStrictlyInside(p, nearby[i])) return false;
-            }
-            return true;
-        });
-
-        for (const point of cornerPoints) {
-            this.nodes.push({ point, neighbors: [], distances: [] });
-        }
-        this.rebuildNodeIndex();
+        this.prepareNodesAndPolygons();
 
         const maxDistSq = MAX_VISIBILITY_DISTANCE * MAX_VISIBILITY_DISTANCE;
         for (let i = 0; i < this.nodes.length; i++) {
@@ -446,21 +475,25 @@ export class PathFinder {
         return this.isBuilding;
     }
 
-    private isInsideAnyBuilding(p: Point2D): boolean {
+    private getContainingBuilding(p: Point2D): Building | null {
         const cell = this.buildingGrid.get(
             packCell(Math.floor(p.x / POLY_CELL_SIZE), Math.floor(p.y / POLY_CELL_SIZE))
         );
-        if (!cell) return false;
+        if (!cell) return null;
 
         for (let i = 0; i < cell.length; i++) {
             const building = this.buildings[cell[i]];
             const bb = building.bounds;
             if (p.x < bb.minX || p.x > bb.maxX || p.y < bb.minY || p.y > bb.maxY) continue;
             if (this.pointInPolygon(p, building.vertices)) {
-                return true;
+                return building;
             }
         }
-        return false;
+        return null;
+    }
+
+    private isInsideAnyBuilding(p: Point2D): boolean {
+        return this.getContainingBuilding(p) !== null;
     }
 
     findPath(start: Point2D, goal: Point2D): PathResult {
@@ -471,13 +504,25 @@ export class PathFinder {
             return { waypoints: [start, goal], totalDistance: dist, found: true };
         }
 
-        const startInside = this.isInsideAnyBuilding(start);
-        const goalInside = this.isInsideAnyBuilding(goal);
-        if (startInside !== goalInside) {
-            return { waypoints: [start, goal], totalDistance: dist, found: false };
+        const startBuilding = this.getContainingBuilding(start);
+        const goalBuilding = this.getContainingBuilding(goal);
+        if (startBuilding !== goalBuilding) {
+            return { waypoints: [], totalDistance: 0, found: false };
         }
 
-        if (this.canSee(start, goal)) {
+        // Indoor movement within the same building: allow only if the segment stays inside the building
+        if (startBuilding !== null) {
+            const mid = { x: (start.x + goal.x) * 0.5, y: (start.y + goal.y) * 0.5 };
+            const staysInside =
+                this.pointInPolygon(mid, startBuilding.vertices) &&
+                !this.segmentCrossesPolygon(start, goal, startBuilding.vertices);
+            return staysInside
+                ? { waypoints: [start, goal], totalDistance: dist, found: true }
+                : { waypoints: [], totalDistance: 0, found: false };
+        }
+
+        // Outdoor direct sightline check against real building polygons
+        if (this.canEndpointSee(start, goal)) {
             return { waypoints: [start, goal], totalDistance: dist, found: true };
         }
 
@@ -492,29 +537,26 @@ export class PathFinder {
         const goalNode: GraphNode = { point: goal, neighbors: [], distances: [] };
         const addedEdges: number[] = [];
 
-        // Connect start to nearest visible graph nodes within visibility distance
-        const startCandidates = this.getNearbyNodeIndices(start, MAX_VISIBILITY_DISTANCE);
-        for (let i = 0; i < startCandidates.length && startNode.neighbors.length < MAX_ENDPOINT_CONNECTORS; i++) {
-            const idx = startCandidates[i];
-            const np = this.nodes[idx].point;
-            if (this.canSee(start, np)) {
-                startNode.neighbors.push(idx);
-                startNode.distances.push(this.distance(start, np));
-            }
+        // Connect start & goal via real-building line-of-sight so agents standing near walls
+        // (even 1 cm from a wall after wall-sliding) always connect cleanly to visible corners.
+        this.connectEndpoint(start, startNode, MAX_VISIBILITY_DISTANCE);
+        if (startNode.neighbors.length === 0) {
+            this.connectEndpoint(start, startNode, FALLBACK_ENDPOINT_RADIUS);
         }
 
-        // Connect goal to nearest visible graph nodes within visibility distance
-        const goalCandidates = this.getNearbyNodeIndices(goal, MAX_VISIBILITY_DISTANCE);
-        let goalConnections = 0;
-        for (let i = 0; i < goalCandidates.length && goalConnections < MAX_ENDPOINT_CONNECTORS; i++) {
-            const idx = goalCandidates[i];
-            const node = this.nodes[idx];
-            if (this.canSee(goal, node.point)) {
-                node.neighbors.push(goalIdx);
-                node.distances.push(this.distance(goal, node.point));
-                addedEdges.push(idx);
-                goalConnections++;
-            }
+        let goalConnections = this.connectGoalEndpoint(
+            goal,
+            goalIdx,
+            addedEdges,
+            MAX_VISIBILITY_DISTANCE
+        );
+        if (goalConnections === 0) {
+            goalConnections = this.connectGoalEndpoint(
+                goal,
+                goalIdx,
+                addedEdges,
+                FALLBACK_ENDPOINT_RADIUS
+            );
         }
 
         if (startNode.neighbors.length === 0 || goalConnections === 0) {
@@ -543,18 +585,80 @@ export class PathFinder {
             return { waypoints: [], totalDistance: 0, found: false };
         }
 
-        const waypoints: Point2D[] = new Array(path.length);
-        let totalDistance = 0;
+        const rawWaypoints: Point2D[] = new Array(path.length);
         for (let i = 0; i < path.length; i++) {
             const idx = path[i];
-            const pt = idx === startIdx ? start : idx === goalIdx ? goal : this.nodes[idx].point;
-            waypoints[i] = pt;
-            if (i > 0) {
-                totalDistance += this.distance(waypoints[i - 1], pt);
-            }
+            rawWaypoints[i] =
+                idx === startIdx ? start : idx === goalIdx ? goal : this.nodes[idx].point;
+        }
+
+        const waypoints = this.smoothPath(rawWaypoints);
+        let totalDistance = 0;
+        for (let i = 1; i < waypoints.length; i++) {
+            totalDistance += this.distance(waypoints[i - 1], waypoints[i]);
         }
 
         return { waypoints, totalDistance, found: true };
+    }
+
+    private connectEndpoint(point: Point2D, targetNode: GraphNode, radius: number): void {
+        const candidates = this.getNearbyNodeIndices(point, radius);
+        for (
+            let i = 0;
+            i < candidates.length && targetNode.neighbors.length < MAX_ENDPOINT_CONNECTORS;
+            i++
+        ) {
+            const idx = candidates[i];
+            const np = this.nodes[idx].point;
+            if (this.canEndpointSee(point, np)) {
+                targetNode.neighbors.push(idx);
+                targetNode.distances.push(this.distance(point, np));
+            }
+        }
+    }
+
+    private connectGoalEndpoint(
+        goal: Point2D,
+        goalIdx: number,
+        addedEdges: number[],
+        radius: number
+    ): number {
+        const candidates = this.getNearbyNodeIndices(goal, radius);
+        let count = 0;
+        for (let i = 0; i < candidates.length && count < MAX_ENDPOINT_CONNECTORS; i++) {
+            const idx = candidates[i];
+            const node = this.nodes[idx];
+            if (this.canEndpointSee(goal, node.point)) {
+                node.neighbors.push(goalIdx);
+                node.distances.push(this.distance(goal, node.point));
+                addedEdges.push(idx);
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /** Greedy string-pulling to remove redundant corner waypoints without clipping buildings. */
+    private smoothPath(raw: Point2D[]): Point2D[] {
+        if (raw.length <= 2) return raw;
+        const smoothed: Point2D[] = [raw[0]];
+        let anchor = 0;
+        while (anchor < raw.length - 1) {
+            let furthest = anchor + 1;
+            for (let j = raw.length - 1; j > anchor + 1; j--) {
+                const isEndpoint = anchor === 0 || j === raw.length - 1;
+                const clear = isEndpoint
+                    ? this.canEndpointSee(raw[anchor], raw[j])
+                    : this.canSee(raw[anchor], raw[j]);
+                if (clear) {
+                    furthest = j;
+                    break;
+                }
+            }
+            smoothed.push(raw[furthest]);
+            anchor = furthest;
+        }
+        return smoothed;
     }
 
     /**
@@ -570,7 +674,6 @@ export class PathFinder {
         cameFrom.fill(-1);
         const closed = new Uint8Array(n);
 
-        // Min-heap storing node indices & f-scores in parallel arrays
         const heapNodes: number[] = [startIdx];
         const heapF: number[] = [this.distance(this.nodes[startIdx].point, goal)];
         gScore[startIdx] = 0;
@@ -658,66 +761,130 @@ export class PathFinder {
         return null;
     }
 
+    /**
+     * Inflate a building polygon outward by `padding` meters, invariant to CW vs CCW winding.
+     */
     private getInflatedPolygon(vertices: Point2D[], padding: number): Point2D[] {
-        const n = vertices.length;
+        const ccw = normalizeCCW(vertices);
+        const n = ccw.length;
         if (n < 3) return [];
 
         const inflated: Point2D[] = [];
         for (let i = 0; i < n; i++) {
-            const prev = vertices[(i - 1 + n) % n];
-            const curr = vertices[i];
-            const next = vertices[(i + 1) % n];
+            const prev = ccw[(i - 1 + n) % n];
+            const curr = ccw[i];
+            const next = ccw[(i + 1) % n];
 
-            const e1 = { x: curr.x - prev.x, y: curr.y - prev.y };
-            const e2 = { x: next.x - curr.x, y: next.y - curr.y };
-            const len1 = Math.sqrt(e1.x * e1.x + e1.y * e1.y);
-            const len2 = Math.sqrt(e2.x * e2.x + e2.y * e2.y);
+            let e1x = curr.x - prev.x;
+            let e1y = curr.y - prev.y;
+            let e2x = next.x - curr.x;
+            let e2y = next.y - curr.y;
+            const len1 = Math.sqrt(e1x * e1x + e1y * e1y);
+            const len2 = Math.sqrt(e2x * e2x + e2y * e2y);
 
             if (len1 < 0.001 || len2 < 0.001) {
                 inflated.push(curr);
                 continue;
             }
 
-            e1.x /= len1;
-            e1.y /= len1;
-            e2.x /= len2;
-            e2.y /= len2;
+            e1x /= len1;
+            e1y /= len1;
+            e2x /= len2;
+            e2y /= len2;
 
-            const n1 = { x: e1.y, y: -e1.x };
-            const n2 = { x: e2.y, y: -e2.x };
+            // Outward right-hand normals for CCW polygon
+            const n1x = e1y;
+            const n1y = -e1x;
+            const n2x = e2y;
+            const n2y = -e2x;
 
-            let bisector = { x: n1.x + n2.x, y: n1.y + n2.y };
-            const bisectorLen = Math.sqrt(bisector.x * bisector.x + bisector.y * bisector.y);
-            if (bisectorLen < 0.001) {
-                bisector = n1;
+            let bx = n1x + n2x;
+            let by = n1y + n2y;
+            const bLen = Math.sqrt(bx * bx + by * by);
+            if (bLen < 0.001) {
+                bx = n1x;
+                by = n1y;
             } else {
-                bisector.x /= bisectorLen;
-                bisector.y /= bisectorLen;
+                bx /= bLen;
+                by /= bLen;
             }
 
-            const dot = n1.x * bisector.x + n1.y * bisector.y;
-            const offsetDist = dot > 0.1 ? padding / dot : padding * 2;
-            const clampedOffset = Math.min(offsetDist, padding * 3);
+            const dot = n1x * bx + n1y * by;
+            const offsetDist = dot > 0.25 ? padding / dot : padding * 2;
+            const clampedOffset = Math.min(offsetDist, padding * 2.5);
 
             inflated.push({
-                x: curr.x + bisector.x * clampedOffset,
-                y: curr.y + bisector.y * clampedOffset,
+                x: curr.x + bx * clampedOffset,
+                y: curr.y + by * clampedOffset,
             });
         }
         return inflated;
     }
 
-    private getPaddedVertices(vertices: Point2D[]): Point2D[] {
-        return this.getInflatedPolygon(vertices, this.padding);
+    /**
+     * Extract outward-padded visibility graph nodes ONLY at convex outer corners
+     * of a building polygon (concave notches never lie on shortest obstacle-avoiding paths).
+     */
+    private getConvexCornerNodes(vertices: Point2D[], padding: number): Point2D[] {
+        const ccw = normalizeCCW(vertices);
+        const n = ccw.length;
+        if (n < 3) return [];
+
+        const corners: Point2D[] = [];
+        for (let i = 0; i < n; i++) {
+            const prev = ccw[(i - 1 + n) % n];
+            const curr = ccw[i];
+            const next = ccw[(i + 1) % n];
+
+            let e1x = curr.x - prev.x;
+            let e1y = curr.y - prev.y;
+            let e2x = next.x - curr.x;
+            let e2y = next.y - curr.y;
+            const len1 = Math.sqrt(e1x * e1x + e1y * e1y);
+            const len2 = Math.sqrt(e2x * e2x + e2y * e2y);
+            if (len1 < 0.01 || len2 < 0.01) continue;
+
+            e1x /= len1;
+            e1y /= len1;
+            e2x /= len2;
+            e2y /= len2;
+
+            // For a CCW polygon, left turn (cross > 0) = convex outer corner
+            const cross = e1x * e2y - e1y * e2x;
+            if (cross <= 0.05) continue;
+
+            const n1x = e1y;
+            const n1y = -e1x;
+            const n2x = e2y;
+            const n2y = -e2x;
+
+            let bx = n1x + n2x;
+            let by = n1y + n2y;
+            const bLen = Math.sqrt(bx * bx + by * by);
+            if (bLen < 0.001) continue;
+            bx /= bLen;
+            by /= bLen;
+
+            const dot = n1x * bx + n1y * by;
+            const offsetDist = dot > 0.25 ? padding / dot : padding * 2;
+            const clampedOffset = Math.min(offsetDist, padding * 2.5);
+
+            corners.push({
+                x: curr.x + bx * clampedOffset,
+                y: curr.y + by * clampedOffset,
+            });
+        }
+        return corners;
     }
 
-    private canSee(a: Point2D, b: Point2D): boolean {
+    /** Check line-of-sight against real building footprints only (used for start/goal endpoints). */
+    private canEndpointSee(a: Point2D, b: Point2D): boolean {
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const len = Math.sqrt(dx * dx + dy * dy);
-        if (len < 0.1) return true;
+        if (len < 0.05) return true;
 
-        const shrink = 0.01;
+        const shrink = Math.min(0.01, len * 0.1);
         const aShrunk = { x: a.x + (dx / len) * shrink, y: a.y + (dy / len) * shrink };
         const bShrunk = { x: b.x - (dx / len) * shrink, y: b.y - (dy / len) * shrink };
 
@@ -725,13 +892,41 @@ export class PathFinder {
         if (nearbyBuildings.length > 0 && !hasLineOfSight(aShrunk, bShrunk, nearbyBuildings)) {
             return false;
         }
+        return true;
+    }
+
+    /** Check line-of-sight between graph nodes with wall-clearance margin. */
+    private canSee(a: Point2D, b: Point2D): boolean {
+        if (!this.canEndpointSee(a, b)) return false;
 
         const nearbyInflated = this.getNearbyInflated(a, b);
         if (nearbyInflated.length > 0 && !hasClearance(a, b, nearbyInflated)) {
             return false;
         }
-
         return true;
+    }
+
+    private segmentCrossesPolygon(a: Point2D, b: Point2D, poly: Point2D[]): boolean {
+        const ax = a.x;
+        const ay = a.y;
+        const dx1 = b.x - ax;
+        const dy1 = b.y - ay;
+        const n = poly.length;
+        for (let i = 0; i < n; i++) {
+            const v1 = poly[i];
+            const v2 = poly[(i + 1) % n];
+            const dx2 = v2.x - v1.x;
+            const dy2 = v2.y - v1.y;
+            const denom = dx1 * dy2 - dy1 * dx2;
+            if (Math.abs(denom) < 1e-10) continue;
+            const dx3 = ax - v1.x;
+            const dy3 = ay - v1.y;
+            const t = (dx3 * dy2 - dy3 * dx2) / -denom;
+            if (t <= 1e-4 || t >= 1 - 1e-4) continue;
+            const u = (dx1 * dy3 - dy1 * dx3) / denom;
+            if (u >= 0 && u <= 1) return true;
+        }
+        return false;
     }
 
     private pointInPolygon(p: Point2D, polygon: Point2D[]): boolean {
@@ -807,10 +1002,9 @@ export class PathFinder {
         }
     }
 
-    saveToCache(): void {
+    private saveToCache(): void {
         if (typeof localStorage === 'undefined') return;
-        if (!this.graphBuilt || this.buildings.length === 0) return;
-
+        if (this.buildings.length === 0) return;
         const cacheKey = this.generateCacheKey(this.buildings);
         if (!cacheKey) return;
 
@@ -823,7 +1017,7 @@ export class PathFinder {
             };
             localStorage.setItem(cacheKey, JSON.stringify(entry));
         } catch {
-            // Ignore storage quota errors
+            // Quota exceeded or unavailable; ignore gracefully
         }
     }
 
@@ -832,7 +1026,7 @@ export class PathFinder {
         const keysToRemove: string[] = [];
         for (let i = 0; i < localStorage.length; i++) {
             const key = localStorage.key(i);
-            if (key?.startsWith(GRAPH_CACHE_PREFIX)) {
+            if (key && (key.startsWith(GRAPH_CACHE_PREFIX) || key.startsWith('bitchat_visgraph_'))) {
                 keysToRemove.push(key);
             }
         }

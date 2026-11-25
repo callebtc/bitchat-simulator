@@ -138,13 +138,16 @@ export class BitchatPerson {
     }
 
     setTarget(p: Point) {
+        if (!this.planPath(p, false, true)) return;
         this.crowd?.leaveGroup(this.id);
         this.mode = MovementMode.TARGET;
         this.destinationKind = null;
         this.dwellTimer = 0;
         this.stuckCount = 0;
-        this.planPath(p);
         this.activity = 'walking';
+        if (this.path && this.onPathCalculated) {
+            this.onPathCalculated(this.path, p);
+        }
     }
 
     setVelocity(v: Vector2) {
@@ -205,6 +208,10 @@ export class BitchatPerson {
             this.activity = 'walking';
         }
         if (!this.target) this.chooseDestination();
+        if (!this.target) {
+            this.setDesired(0, 0);
+            return 0.5;
+        }
 
         let speed = this.prefSpeed * (group ? GROUP_SPEED_FACTOR : 1);
         if (crowd) {
@@ -240,7 +247,11 @@ export class BitchatPerson {
                 this.planPath({ x: _slot.x, y: _slot.y }, false);
                 this.followReplanTimer = 3;
             }
-            this.navigate(this.prefSpeed * 1.25);
+            if (this.target) {
+                this.navigate(this.prefSpeed * 1.25);
+            } else {
+                this.setDesired(0, 0);
+            }
             return 1;
         }
         this.clearNavigation();
@@ -269,16 +280,24 @@ export class BitchatPerson {
         }
         if (!this.target) {
             if (this.busyBuildingId) {
-                const p = this.randomPointInBuilding(this.busyBuildingId);
-                if (p) {
-                    this.planPath(p);
-                    this.destinationKind = null;
-                    this.pendingDwell = 3 + this.rng.next() * 22;
-                } else {
-                    this.busyBuildingId = null;
+                for (let attempt = 0; attempt < 4; attempt++) {
+                    const p = this.randomPointInBuilding(this.busyBuildingId);
+                    if (!p) {
+                        this.busyBuildingId = null;
+                        break;
+                    }
+                    if (this.planPath(p)) {
+                        this.destinationKind = null;
+                        this.pendingDwell = 3 + this.rng.next() * 22;
+                        break;
+                    }
                 }
             }
             if (!this.target) this.chooseDestination();
+        }
+        if (!this.target) {
+            this.setDesired(0, 0);
+            return 0.5;
         }
         let speed = this.prefSpeed;
         const crowd = this.crowd;
@@ -293,20 +312,30 @@ export class BitchatPerson {
     // -------------------------------------------------------------- navigation
 
     private chooseDestination(): void {
+        const maxAttempts = 8;
         if (this.crowd) {
-            const poi = this.crowd.pickDestination(this.position.x, this.position.y, this.rng);
-            this.destinationKind = poi.kind;
-            const [lo, hi] = DWELL_S[poi.kind];
-            this.pendingDwell = lo + this.rng.next() * (hi - lo);
-            this.planPath({ x: poi.x, y: poi.y });
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                const poi = this.crowd.pickDestination(this.position.x, this.position.y, this.rng);
+                if (this.planPath({ x: poi.x, y: poi.y })) {
+                    this.destinationKind = poi.kind;
+                    const [lo, hi] = DWELL_S[poi.kind];
+                    this.pendingDwell = lo + this.rng.next() * (hi - lo);
+                    return;
+                }
+            }
             return;
         }
         // Standalone (no engine): wander to a nearby point
-        const ang = this.rng.next() * Math.PI * 2;
-        const d = 20 + this.rng.next() * 60;
-        this.destinationKind = 'sidewalk';
-        this.pendingDwell = this.rng.next() * 8;
-        this.planPath({ x: this.position.x + Math.cos(ang) * d, y: this.position.y + Math.sin(ang) * d });
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            const ang = this.rng.next() * Math.PI * 2;
+            const d = 20 + this.rng.next() * 60;
+            const dest = { x: this.position.x + Math.cos(ang) * d, y: this.position.y + Math.sin(ang) * d };
+            if (this.planPath(dest)) {
+                this.destinationKind = 'sidewalk';
+                this.pendingDwell = this.rng.next() * 8;
+                return;
+            }
+        }
     }
 
     private startDwell(): void {
@@ -316,22 +345,39 @@ export class BitchatPerson {
         this.setDesired(0, 0);
     }
 
-    /** Compute a visibility-graph path to `p` (straight line when no graph). */
-    private planPath(p: Point, notify = true): void {
+    /**
+     * Compute a visibility-graph path to `p` (straight line only when no buildings exist).
+     * Never falls back to an unrouted straight line across buildings when pathfinding fails.
+     */
+    private planPath(p: Point, notify = true, keepExistingOnFailure = false): boolean {
+        const env = this.environment;
+        const pf = this.pathFinder;
+        if (pf && env && env.getBuildingCount() > 0) {
+            if (pf.isBuildingGraph()) {
+                if (!keepExistingOnFailure) this.clearNavigation();
+                return false;
+            }
+            const result: PathResult = pf.findPath(
+                { x: this.position.x, y: this.position.y },
+                { x: p.x, y: p.y }
+            );
+            if (!result.found || result.waypoints.length < 2) {
+                if (!keepExistingOnFailure) this.clearNavigation();
+                return false;
+            }
+            this.target = { x: p.x, y: p.y };
+            this.path = result.waypoints.map(wp => ({ x: wp.x, y: wp.y }));
+            this.currentWaypointIndex = 1;
+            this.resetProgress();
+            if (notify && this.onPathCalculated) this.onPathCalculated(this.path, p);
+            return true;
+        }
+
         this.target = { x: p.x, y: p.y };
         this.path = null;
         this.currentWaypointIndex = 0;
         this.resetProgress();
-        const env = this.environment;
-        const pf = this.pathFinder;
-        if (pf && env && env.getBuildingCount() > 0 && pf.isReady()) {
-            const result: PathResult = pf.findPath({ x: this.position.x, y: this.position.y }, { x: p.x, y: p.y });
-            if (result.found && result.waypoints.length > 1) {
-                this.path = result.waypoints.map(wp => ({ x: wp.x, y: wp.y }));
-                this.currentWaypointIndex = 1;
-                if (notify && this.onPathCalculated) this.onPathCalculated(this.path, p);
-            }
-        }
+        return true;
     }
 
     private clearNavigation(): void {
@@ -495,7 +541,11 @@ export class BitchatPerson {
             }
             return;
         }
-        this.planPath(target, false);
+        if (!this.planPath(target, false) && this.mode === MovementMode.TARGET) {
+            this.mode = MovementMode.STILL;
+            this.activity = 'idle';
+            this.velocity = { x: 0, y: 0 };
+        }
     }
 
     private randomPointInBuilding(buildingId: string): Point | null {

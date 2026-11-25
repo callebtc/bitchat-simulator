@@ -16,7 +16,7 @@ import { RadioMedium, RadioMediumConfig } from './RadioMedium';
 
 const CONNECT_RADIUS = 100;
 const DISCONNECT_RADIUS = 110;
-const PATHFINDING_PADDING = 2.5;
+const PATHFINDING_PADDING = 1.5;
 
 // Android MeshConnectionTracker retry & GATT setup constants
 const CONNECTION_RETRY_DELAY_MS = 5_000;

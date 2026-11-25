@@ -298,6 +298,8 @@ export function hasLineOfSight(a: Point2D, b: Point2D, buildings: Building[]): b
     const lineMaxY = ay > by ? ay : by;
     const totalLen = Math.sqrt(dx1 * dx1 + dy1 * dy1);
 
+    const mid: Point2D = { x: (ax + bx) * 0.5, y: (ay + by) * 0.5 };
+
     for (let bi = 0; bi < buildings.length; bi++) {
         const building = buildings[bi];
         const bb = building.bounds;
@@ -333,8 +335,9 @@ export function hasLineOfSight(a: Point2D, b: Point2D, buildings: Building[]): b
         if (count === 1) {
             if (pointInPolygon(a, verts) && minT * totalLen > 0.1) return false;
             if (pointInPolygon(b, verts) && (1 - minT) * totalLen > 0.1) return false;
+            if (totalLen > 0.1 && pointInPolygon(mid, verts)) return false;
         } else if (count === 0) {
-            if (pointInPolygon(a, verts) && pointInPolygon(b, verts) && totalLen > 0.1) {
+            if (totalLen > 0.1 && (pointInPolygon(mid, verts) || (pointInPolygon(a, verts) && pointInPolygon(b, verts)))) {
                 return false;
             }
         }
